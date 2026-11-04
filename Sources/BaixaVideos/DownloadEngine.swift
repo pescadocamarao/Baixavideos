@@ -9,7 +9,7 @@ enum StopIntent {
 }
 
 @MainActor
-final class DownloadJob: ObservableObject {
+final class DownloadJob: ObservableObject, Identifiable {
     let id = UUID()
     let request: DownloadRequest
 

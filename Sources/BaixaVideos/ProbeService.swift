@@ -10,7 +10,6 @@ enum DownloadTransport {
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        let expected = end - start + 1
         if http.statusCode == 206 {
             return data
         }
