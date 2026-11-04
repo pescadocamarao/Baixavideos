@@ -11,7 +11,7 @@ enum StopIntent {
 
 @MainActor
 final class DownloadJob: ObservableObject, Identifiable {
-    let id = UUID()
+    let id: UUID
     let request: DownloadRequest
 
     @Published var state: DownloadState = .queued
@@ -29,7 +29,8 @@ final class DownloadJob: ObservableObject, Identifiable {
     private var lastSampleBytes: Int64 = 0
     private var lastSampleDate = Date()
 
-    init(request: DownloadRequest) {
+    init(request: DownloadRequest, id: UUID = UUID()) {
+        self.id = id
         self.request = request
         self.totalBytes = request.totalBytes
     }
@@ -47,9 +48,11 @@ final class DownloadJob: ObservableObject, Identifiable {
     }
 
     var tempDirectory: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        return caches
-            .appendingPathComponent("BaixaVideosTemp", isDirectory: true)
+        // Documents (não Caches): o iOS pode limpar Caches sozinho, e a
+        // retomada entre aberturas do app precisa dos pedaços no disco.
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return documents
+            .appendingPathComponent("InProgress", isDirectory: true)
             .appendingPathComponent(id.uuidString, isDirectory: true)
     }
 
@@ -90,8 +93,60 @@ final class DownloadManager: ObservableObject {
 
     private let library: LibraryStore
 
+    private struct PersistedJob: Codable {
+        let id: UUID
+        let request: DownloadRequest
+    }
+
+    private var inProgressDirectory: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return documents.appendingPathComponent("InProgress", isDirectory: true)
+    }
+
+    private var manifestURL: URL {
+        inProgressDirectory.appendingPathComponent("manifest.json")
+    }
+
     init(library: LibraryStore) {
         self.library = library
+        restorePersistedJobs()
+    }
+
+    // MARK: Persistência da fila (retomar entre aberturas do app)
+
+    private func restorePersistedJobs() {
+        try? FileManager.default.createDirectory(at: inProgressDirectory, withIntermediateDirectories: true)
+        guard let data = try? Data(contentsOf: manifestURL),
+              let persisted = try? JSONDecoder().decode([PersistedJob].self, from: data) else { return }
+        for entry in persisted {
+            let job = DownloadJob(request: entry.request, id: entry.id)
+            job.state = .paused
+            job.downloadedBytes = downloadedBytesOnDisk(job)
+            jobs.append(job)
+        }
+    }
+
+    private func downloadedBytesOnDisk(_ job: DownloadJob) -> Int64 {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: job.tempDirectory, includingPropertiesForKeys: [.fileSizeKey]
+        ) else { return 0 }
+        return files.reduce(Int64(0)) { sum, url in
+            sum + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+    }
+
+    private func persistQueue() {
+        let pending = jobs
+            .filter { !$0.state.isTerminal }
+            .map { PersistedJob(id: $0.id, request: $0.request) }
+        if pending.isEmpty {
+            try? FileManager.default.removeItem(at: manifestURL)
+            return
+        }
+        try? FileManager.default.createDirectory(at: inProgressDirectory, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(pending) {
+            try? data.write(to: manifestURL, options: .atomic)
+        }
     }
 
     var activeCount: Int {
@@ -104,6 +159,7 @@ final class DownloadManager: ObservableObject {
     func enqueue(_ request: DownloadRequest) -> DownloadJob {
         let job = DownloadJob(request: request)
         jobs.append(job)
+        persistQueue()
         start(job)
         return job
     }
@@ -119,6 +175,7 @@ final class DownloadManager: ObservableObject {
             guard let self, let job else { return }
             await self.run(job)
             job.task = nil
+            self.persistQueue()
         }
     }
 
@@ -141,6 +198,7 @@ final class DownloadManager: ObservableObject {
         cancel(job)
         cleanTemp(job)
         jobs.removeAll { $0.id == job.id }
+        persistQueue()
     }
 
     // MARK: Execução
@@ -580,7 +638,7 @@ final class StreamDownloader: NSObject, URLSessionDataDelegate, @unchecked Senda
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
                 self.continuation = continuation
-                let task = session.dataTask(with: url)
+                let task = session.dataTask(with: DownloadTransport.makeRequest(url: url))
                 self.dataTask = task
                 task.resume()
             }

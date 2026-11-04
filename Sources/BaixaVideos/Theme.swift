@@ -97,4 +97,15 @@ enum Format {
         f.dateFormat = "dd/MM/yyyy HH:mm"
         return f.string(from: date)
     }
+
+    /// Tempo de player: 0:00, 12:34 ou 1:02:03.
+    static func time(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
+    }
 }

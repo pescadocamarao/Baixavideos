@@ -2,10 +2,21 @@ import Foundation
 
 /// Transporte HTTP de baixo nível usado pela sondagem e pelo motor.
 enum DownloadTransport {
-    static func fetchRange(url: URL, start: Int64, end: Int64) async throws -> Data {
+    /// UA de Safari desktop: vários CDNs servem a playlist master completa
+    /// (com as qualidades altas) pra navegador de desktop, mas entregam uma
+    /// variante baixa quando detectam o UA genérico de app.
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+
+    static func makeRequest(url: URL, timeout: TimeInterval = 120) -> URLRequest {
         var request = URLRequest(url: url)
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = timeout
+        return request
+    }
+
+    static func fetchRange(url: URL, start: Int64, end: Int64) async throws -> Data {
+        var request = makeRequest(url: url)
         request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
-        request.timeoutInterval = 120
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
@@ -26,8 +37,7 @@ enum DownloadTransport {
     }
 
     static func fetchData(url: URL) async throws -> Data {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 120
+        let request = makeRequest(url: url)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
@@ -64,9 +74,8 @@ enum ProbeService {
 
     private static func probeFile(url: URL) async throws -> ProbeResult {
         // 1) HEAD
-        var head = URLRequest(url: url)
+        var head = DownloadTransport.makeRequest(url: url, timeout: 30)
         head.httpMethod = "HEAD"
-        head.timeoutInterval = 30
         if let (_, response) = try? await URLSession.shared.data(for: head),
            let http = response as? HTTPURLResponse,
            (200..<300).contains(http.statusCode) {
@@ -86,9 +95,8 @@ enum ProbeService {
         }
 
         // 2) GET com Range de 1 byte (descobre tamanho via Content-Range)
-        var get = URLRequest(url: url)
+        var get = DownloadTransport.makeRequest(url: url, timeout: 30)
         get.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        get.timeoutInterval = 30
         let (_, response) = try await URLSession.shared.data(for: get)
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
@@ -119,20 +127,16 @@ enum ProbeService {
 
     private static func probeHLS(url: URL) async throws -> ProbeResult {
         let text = try await DownloadTransport.fetchText(url: url)
-        let lines = text.components(separatedBy: .newlines)
         if text.contains("#EXT-X-STREAM-INF") {
-            let variants = parseVariants(lines: lines, baseURL: url)
-            return ProbeResult(
-                sourceURL: url,
-                finalURL: url,
-                contentType: "application/x-mpegURL",
-                contentLength: nil,
-                supportsRange: false,
-                kind: .hlsMaster,
-                variants: variants.sorted { $0.bandwidth > $1.bandwidth },
-                segmentCount: nil
-            )
+            return masterResult(masterURL: url, text: text, sourceURL: url)
         }
+        // A URL colada é uma playlist de mídia (qualidade única, geralmente a
+        // variante que o player do site escolheu — muitas vezes a baixa).
+        // Antes de aceitar, procura uma playlist MASTER irmã com as variantes.
+        if let master = await discoverMaster(mediaURL: url) {
+            return masterResult(masterURL: master.url, text: master.text, sourceURL: url)
+        }
+        let lines = text.components(separatedBy: .newlines)
         let segments = lines.filter { $0.hasPrefix("#EXTINF") }.count
         return ProbeResult(
             sourceURL: url,
@@ -144,6 +148,50 @@ enum ProbeService {
             variants: [],
             segmentCount: segments > 0 ? segments : nil
         )
+    }
+
+    private static func masterResult(masterURL: URL, text: String, sourceURL: URL) -> ProbeResult {
+        let lines = text.components(separatedBy: .newlines)
+        let variants = parseVariants(lines: lines, baseURL: masterURL)
+        return ProbeResult(
+            sourceURL: sourceURL,
+            finalURL: masterURL,
+            contentType: "application/x-mpegURL",
+            contentLength: nil,
+            supportsRange: false,
+            kind: .hlsMaster,
+            variants: variants.sorted { ($0.height ?? 0, $0.bandwidth) > ($1.height ?? 0, $1.bandwidth) },
+            segmentCount: nil
+        )
+    }
+
+    /// Tenta achar a playlist master a partir de uma playlist de mídia:
+    /// mesmos nomes clássicos na mesma pasta e na pasta acima (padrão de CDN:
+    /// /720p/index.m3u8 com a master em /index.m3u8 ou /master.m3u8).
+    private static func discoverMaster(mediaURL: URL) async -> (url: URL, text: String)? {
+        let masterNames = ["master.m3u8", "index.m3u8", "playlist.m3u8", "main.m3u8", "manifest.m3u8", "hls.m3u8"]
+        var directories: [URL] = []
+        let sameDir = mediaURL.deletingLastPathComponent()
+        directories.append(sameDir)
+        let parentDir = sameDir.deletingLastPathComponent()
+        if parentDir != sameDir { directories.append(parentDir) }
+
+        var candidates: [URL] = []
+        for dir in directories {
+            for name in masterNames {
+                let candidate = dir.appendingPathComponent(name)
+                if candidate.absoluteString != mediaURL.absoluteString {
+                    candidates.append(candidate)
+                }
+            }
+        }
+        for candidate in candidates {
+            if let text = try? await DownloadTransport.fetchText(url: candidate),
+               text.contains("#EXT-X-STREAM-INF") {
+                return (candidate, text)
+            }
+        }
+        return nil
     }
 
     static func parseVariants(lines: [String], baseURL: URL) -> [HLSVariant] {

@@ -18,9 +18,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.seidao.baixavideos
         PRODUCT_NAME: BaixaVideos
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "2.0"
+        CURRENT_PROJECT_VERSION: "3"
         TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: "YES"
         CODE_SIGN_STYLE: Manual
 schemes:

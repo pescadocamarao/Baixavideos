@@ -60,7 +60,15 @@ Sem assinatura sua, o iPhone não abre o app. Não existe atalho honesto pra iss
 - A assinatura gratuita também **conta na cota de App IDs** da conta (a mesma cota do AltStore/SideStore). Se a sua cota já estiver cheia, a instalação vai falhar até liberar espaço ou usar outro Apple ID/certificado.
 - Com **certificado pago próprio (válido por 1 ano)**, o app dura o ano inteiro sem re-assinar.
 
-## Limites desta versão (v1.0)
+## Novidades da v2.0
+
+- Interface nova em abas (Baixar · Downloads · Biblioteca), sem passo a passo, só ícones e o essencial.
+- Player estilo VLC: toque duplo nas laterais volta/avança 10s, arrastar na horizontal busca no vídeo, arrastar na vertical ajusta brilho (esquerda) e volume (direita), pinça/botão alterna o zoom (preencher a tela), velocidades de 0,5x a 2x, Picture in Picture, print do quadro atual direto pras Fotos e atalho pra abrir no VLC.
+- Biblioteca com miniaturas, busca, ordenação (data, nome, tamanho), filtro (Todos/MP4/HLS), renomear, compartilhar e apagar.
+- Downloads pausados sobrevivem ao fechamento do app: a fila e os pedaços ficam salvos e dá pra retomar quando reabrir.
+- Qualidade: o app agora se apresenta como Safari de desktop pros servidores (vários CDNs só liberam as qualidades altas assim) e, quando o link colado é de uma playlist de qualidade única, ele procura sozinho a playlist master com todas as variantes.
+
+## Limites desta versão (v2.0)
 
 - HLS **criptografado** (playlists com `#EXT-X-KEY`, ex.: alguns players protegidos) não é suportado — o app avisa quando encontra um.
 - Arquivo de servidor **sem suporte a Range**: o download é contínuo (1 conexão) e, se pausar, ele recomeça do zero. Com Range, pausar/retomar reaproveita os pedaços já baixados.

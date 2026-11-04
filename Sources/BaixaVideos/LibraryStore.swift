@@ -36,6 +36,27 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
+    /// Renomeia o título e o arquivo físico (mantém a extensão).
+    func rename(_ item: LibraryItem, to newTitle: String) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let ext = (items[index].fileName as NSString).pathExtension
+        let currentName = items[index].fileName
+        let baseName = "\(Self.sanitizeFileName(trimmed)).\(ext)"
+        var newName = baseName
+        if baseName != currentName {
+            newName = uniqueFileName(title: trimmed, extension: ext)
+            try? FileManager.default.moveItem(
+                at: videosDirectory.appendingPathComponent(currentName),
+                to: videosDirectory.appendingPathComponent(newName)
+            )
+        }
+        items[index].title = trimmed
+        items[index].fileName = newName
+        save()
+    }
+
     /// Gera um nome de arquivo único dentro de Documents/Videos.
     func uniqueFileName(title: String, extension ext: String) -> String {
         let base = Self.sanitizeFileName(title)

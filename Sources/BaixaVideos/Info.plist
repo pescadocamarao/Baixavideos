@@ -24,6 +24,19 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- Detectar o VLC pra oferecer "abrir no VLC" a partir do player. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>vlc</string>
+	</array>
+	<!-- Salvar prints (quadros) do vídeo nas Fotos a partir do player. -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Salvar nas Fotos os prints que você capturar dos vídeos.</string>
+	<!-- Áudio em segundo plano: necessário pro Picture in Picture. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<!-- O app baixa vídeos de URLs que o próprio usuário cola, inclusive
 	     servidores http antigos. Por isso o ATS permite http apenas porque
 	     o conteúdo vem de endereços arbitrários fornecidos pelo usuário. -->

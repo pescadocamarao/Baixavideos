@@ -2,20 +2,43 @@ import SwiftUI
 import AVKit
 import UIKit
 
-struct PlayerSheetItem: Identifiable {
-    let id = UUID()
-    let url: URL
-    let title: String
-}
-
-struct ShareSheetItem: Identifiable {
-    let id = UUID()
-    let url: URL
-}
+// MARK: - Raiz (abas)
 
 struct ContentView: View {
+    @EnvironmentObject private var downloads: DownloadManager
+    @State private var tab: AppTab = .download
+
+    enum AppTab {
+        case download
+        case queue
+        case library
+    }
+
+    var body: some View {
+        TabView(selection: $tab) {
+            DownloadScreen(selectedTab: $tab)
+                .tabItem { Label("Baixar", systemImage: "arrow.down.circle.fill") }
+                .tag(AppTab.download)
+
+            QueueScreen()
+                .tabItem { Label("Downloads", systemImage: "tray.and.arrow.down.fill") }
+                .tag(AppTab.queue)
+                .badge(downloads.activeCount)
+
+            LibraryView()
+                .tabItem { Label("Biblioteca", systemImage: "film.stack") }
+                .tag(AppTab.library)
+        }
+        .tint(Theme.lime)
+    }
+}
+
+// MARK: - Tela de download
+
+struct DownloadScreen: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var downloads: DownloadManager
+    @Binding var selectedTab: ContentView.AppTab
 
     @State private var urlText = ""
     @State private var probe: ProbeResult?
@@ -24,9 +47,8 @@ struct ContentView: View {
     @State private var connections = 8
     @State private var isAnalyzing = false
     @State private var analyzeError: String?
-    @State private var queueExpanded = false
-    @State private var playerItem: PlayerSheetItem?
-    @State private var shareItem: ShareSheetItem?
+    @State private var previewPlayer: AVPlayer?
+    @State private var showFullPlayer = false
     @FocusState private var activeField: Field?
 
     private enum Field {
@@ -51,26 +73,20 @@ struct ContentView: View {
     private var qualityLabel: String {
         guard let probe else { return "—" }
         switch probe.kind {
-        case .hlsMaster:
-            return selectedVariant?.label ?? "Original"
-        case .hlsMedia:
-            return "Original (HLS)"
-        case .file:
-            return "Original"
+        case .hlsMaster: return selectedVariant?.label ?? "Original"
+        case .hlsMedia: return "Original"
+        case .file: return "Original"
         }
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    stepAnalyze
-                    stepWatch
-                    stepQuality
-                    stepDownload
-                    librarySection
+                VStack(spacing: 16) {
+                    urlCard
+                    if let probe { resultSection(probe) }
                 }
-                .padding(12)
+                .padding(16)
             }
             .background(Theme.background)
             .navigationTitle("BaixaVídeos")
@@ -81,266 +97,214 @@ struct ContentView: View {
                         .font(.system(.subheadline, design: .monospaced).weight(.bold))
                 }
             }
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom) {
-                QueueBar(expanded: $queueExpanded)
+            .fullScreenCover(isPresented: $showFullPlayer) {
+                if let mediaURL = selectedMediaURL {
+                    PlayerScreen(
+                        url: mediaURL,
+                        title: title.isEmpty ? (probe?.suggestedTitle ?? "Vídeo") : title,
+                        isRemote: true
+                    )
+                }
             }
-        }
-        .sheet(item: $playerItem) { item in
-            PlayerView(url: item.url, title: item.title)
-        }
-        .sheet(item: $shareItem) { item in
-            ShareSheet(items: [item.url])
+            .onChange(of: selectedVariantID) { _ in refreshPreview() }
         }
     }
 
-    // MARK: 01 · Analisar
+    // MARK: URL
 
-    private var stepAnalyze: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StepHeader(number: "01", title: "Analisar link")
-            TextField("Cole a URL direta (.mp4, .mov, .webm, .m3u8)", text: $urlText)
-                .font(.system(.subheadline, design: .monospaced))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .focused($activeField, equals: .url)
-                .submitLabel(.go)
-                .onSubmit { Task { await analyze() } }
-                .padding(10)
-                .background(Color(white: 0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+    private var urlCard: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "link")
+                    .foregroundColor(Theme.textDim)
+                TextField("https://…", text: $urlText)
+                    .font(.system(.subheadline, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .focused($activeField, equals: .url)
+                    .submitLabel(.go)
+                    .onSubmit { Task { await analyze() } }
+                if !urlText.isEmpty {
+                    Button {
+                        urlText = ""
+                        probe = nil
+                        previewPlayer = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(Theme.textDim)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(Color(white: 0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
             HStack(spacing: 10) {
                 Button {
                     if let pasted = UIPasteboard.general.string {
                         urlText = pasted
                     }
                 } label: {
-                    Text("Colar")
+                    Label("Colar", systemImage: "doc.on.clipboard")
                 }
                 .buttonStyle(GhostButtonStyle())
 
                 Button {
                     Task { await analyze() }
                 } label: {
-                    Text(isAnalyzing ? "Analisando…" : "Analisar")
+                    if isAnalyzing {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(.black)
+                            Text("Analisando…")
+                        }
+                    } else {
+                        Label("Analisar", systemImage: "magnifyingglass")
+                    }
                 }
                 .buttonStyle(LimeButtonStyle())
                 .disabled(isAnalyzing || urlText.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+
             if let analyzeError {
-                Text(analyzeError)
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundColor(Theme.danger)
-            }
-            if let probe {
-                VStack(alignment: .leading, spacing: 3) {
-                    infoRow("TIPO", probe.kind == .file ? "Arquivo direto" : (probe.kind == .hlsMaster ? "HLS (várias qualidades)" : "HLS (qualidade única)"))
-                    infoRow("FORMATO", probe.contentType ?? probe.fileExtension.uppercased())
-                    infoRow("TAMANHO", Format.bytes(probe.contentLength))
-                    if probe.kind == .file {
-                        infoRow("RANGE", probe.supportsRange ? "SIM (paralelo)" : "NÃO (contínuo)")
-                    }
-                    if let segments = probe.segmentCount {
-                        infoRow("SEGMENTOS", "\(segments)")
-                    }
-                    infoRow("ARQUIVO", probe.suggestedFileName)
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(analyzeError)
+                        .font(.system(.footnote, design: .monospaced))
                 }
+                .foregroundColor(Theme.danger)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .panelCard()
     }
 
-    private func infoRow(_ key: String, _ value: String) -> some View {
-        HStack {
-            Text(key)
-                .font(.system(.caption, design: .monospaced).weight(.bold))
-                .foregroundColor(Theme.textDim)
-                .frame(width: 84, alignment: .leading)
-            Text(value)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(Theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-        }
-    }
+    // MARK: Resultado da análise
 
-    // MARK: 02 · Assistir
-
-    private var stepWatch: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StepHeader(number: "02", title: "Assistir")
+    private func resultSection(_ probe: ProbeResult) -> some View {
+        VStack(spacing: 16) {
             if let mediaURL = selectedMediaURL {
-                RemotePreview(url: mediaURL)
-                    .frame(height: 210)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .id(mediaURL)
-                TextField("Título do vídeo", text: $title)
-                    .focused($activeField, equals: .title)
+                ZStack(alignment: .bottomTrailing) {
+                    if let previewPlayer {
+                        VideoPlayer(player: previewPlayer)
+                            .frame(height: 216)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(white: 0.08))
+                            .frame(height: 216)
+                    }
+                    Button { showFullPlayer = true } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.black)
+                            .padding(8)
+                            .background(Theme.lime)
+                            .clipShape(Circle())
+                    }
+                    .padding(10)
+                }
+                .id(mediaURL)
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "pencil")
+                    .foregroundColor(Theme.textDim)
+                TextField("Título", text: $title)
                     .font(.system(.subheadline, design: .monospaced))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .padding(10)
-                    .background(Color(white: 0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                Text("Analise um link para liberar o player e assistir antes de baixar.")
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundColor(Theme.textDim)
+                    .focused($activeField, equals: .title)
             }
-        }
-        .panelCard()
-    }
+            .padding(12)
+            .background(Theme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Theme.panelBorder, lineWidth: 1)
+            )
 
-    // MARK: 03 · Qualidade e conexões
-
-    private var stepQuality: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StepHeader(number: "03", title: "Qualidade e conexões")
-            if let probe, probe.kind == .hlsMaster {
-                VStack(spacing: 6) {
-                    ForEach(probe.variants) { variant in
-                        Button {
-                            selectedVariantID = variant.id
-                        } label: {
-                            HStack {
-                                Text(variant.id == selectedVariantID ? "●" : "○")
-                                    .foregroundColor(variant.id == selectedVariantID ? Theme.lime : Theme.textDim)
-                                Text(variant.label)
-                                    .font(.system(.subheadline, design: .monospaced))
-                                    .foregroundColor(Theme.textPrimary)
-                                Spacer()
+            if probe.kind == .hlsMaster {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(probe.variants) { variant in
+                            chip(
+                                label: variant.label,
+                                selected: variant.id == selectedVariantID,
+                                icon: variant.id == selectedVariantID ? "checkmark.circle.fill" : nil
+                            ) {
+                                selectedVariantID = variant.id
                             }
-                            .padding(.vertical, 7)
-                            .padding(.horizontal, 10)
-                            .background(Color(white: 0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-                        .buttonStyle(.plain)
                     }
                 }
-            } else {
-                Text(probe == nil ? "A qualidade aparece aqui quando o link tem variantes (HLS)." : "Qualidade única: \(qualityLabel).")
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundColor(Theme.textDim)
             }
 
-            Text("CONEXÕES (estilo aria2)")
-                .font(.system(.caption, design: .monospaced).weight(.bold))
-                .foregroundColor(Theme.textDim)
             HStack(spacing: 8) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textDim)
                 ForEach(connectionOptions, id: \.self) { option in
-                    Button {
+                    chip(label: "\(option)x", selected: connections == option, icon: nil) {
                         connections = option
-                    } label: {
-                        Text("\(option)x")
-                            .font(.system(.subheadline, design: .monospaced).weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(connections == option ? Theme.lime : Color(white: 0.14))
-                            .foregroundColor(connections == option ? .black : Theme.textPrimary)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            if let probe, probe.kind == .file, !probe.supportsRange {
-                Text("Este servidor não aceita Range: as conexões não se aplicam e o download será contínuo (1x).")
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundColor(Theme.textDim)
-            }
-            if let probe, probe.kind != .file {
-                Text("No HLS os segmentos baixam em até 4 conexões paralelas.")
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundColor(Theme.textDim)
-            }
-        }
-        .panelCard()
-    }
 
-    // MARK: 04 · Baixar e salvar
+            HStack(spacing: 10) {
+                Label(probe.kind == .file ? "Arquivo" : "HLS",
+                      systemImage: probe.kind == .file ? "doc.fill" : "list.bullet.rectangle.fill")
+                Text("·")
+                Text(probe.contentType ?? probe.fileExtension.uppercased())
+                if let length = probe.contentLength {
+                    Text("·")
+                    Text(Format.bytes(length))
+                }
+                if let segments = probe.segmentCount {
+                    Text("·")
+                    Text("\(segments) segmentos")
+                }
+            }
+            .font(.system(.caption, design: .monospaced))
+            .foregroundColor(Theme.textDim)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-    private var stepDownload: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StepHeader(number: "04", title: "Baixar e salvar")
-            Button {
-                enqueueDownload()
-            } label: {
-                Text("Baixar agora")
+            Button { enqueueDownload() } label: {
+                Label("Baixar", systemImage: "arrow.down.to.line")
             }
             .buttonStyle(LimeButtonStyle())
-            .disabled(probe == nil || selectedMediaURL == nil)
-            Text("App nativo: sem bloqueio de CORS. O arquivo final fica salvo na Biblioteca (Documents/Videos).")
-                .font(.system(.footnote, design: .monospaced))
-                .foregroundColor(Theme.textDim)
         }
-        .panelCard()
     }
 
-    // MARK: Biblioteca
-
-    private var librarySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            StepHeader(number: "05", title: "Biblioteca")
-            if library.items.isEmpty {
-                Text("Nenhum vídeo salvo ainda.")
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundColor(Theme.textDim)
-            } else {
-                ForEach(library.items) { item in
-                    libraryRow(item)
-                    if item.id != library.items.last?.id {
-                        Divider().background(Theme.panelBorder)
-                    }
+    private func chip(label: String, selected: Bool, icon: String?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 12, weight: .bold))
                 }
+                Text(label)
+                    .font(.system(.subheadline, design: .monospaced).weight(.bold))
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(selected ? Theme.lime : Color(white: 0.13))
+            .foregroundColor(selected ? .black : Theme.textPrimary)
+            .clipShape(Capsule())
         }
-        .panelCard()
-    }
-
-    private func libraryRow(_ item: LibraryItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(item.title)
-                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
-                .foregroundColor(Theme.textPrimary)
-                .lineLimit(2)
-            Text("\(item.qualityLabel) · \(Format.bytes(item.fileSize)) · \(Format.date(item.createdAt))")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(Theme.textDim)
-            HStack(spacing: 8) {
-                Button {
-                    playerItem = PlayerSheetItem(url: library.url(for: item), title: item.title)
-                } label: {
-                    Label("Assistir", systemImage: "play.fill")
-                        .font(.system(.caption, design: .monospaced).weight(.bold))
-                }
-                .buttonStyle(GhostButtonStyle())
-                .disabled(!library.fileExists(item))
-
-                Button {
-                    shareItem = ShareSheetItem(url: library.url(for: item))
-                } label: {
-                    Label("Compartilhar", systemImage: "square.and.arrow.up")
-                        .font(.system(.caption, design: .monospaced).weight(.bold))
-                }
-                .buttonStyle(GhostButtonStyle())
-                .disabled(!library.fileExists(item))
-
-                Spacer()
-
-                Button(role: .destructive) {
-                    library.delete(item)
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(GhostButtonStyle())
-            }
-        }
-        .padding(.vertical, 4)
+        .buttonStyle(.plain)
     }
 
     // MARK: Ações
+
+    private func refreshPreview() {
+        guard let mediaURL = selectedMediaURL else {
+            previewPlayer = nil
+            return
+        }
+        previewPlayer?.pause()
+        previewPlayer = AVPlayer(url: mediaURL)
+    }
 
     private func analyze() async {
         activeField = nil
@@ -358,12 +322,16 @@ struct ContentView: View {
             probe = result
             title = result.suggestedTitle
             if result.kind == .hlsMaster {
-                selectedVariantID = result.variants.max(by: { ($0.height ?? 0, $0.bandwidth) < ($1.height ?? 0, $1.bandwidth) })?.id
+                selectedVariantID = result.variants.max(by: {
+                    ($0.height ?? 0, $0.bandwidth) < ($1.height ?? 0, $1.bandwidth)
+                })?.id
             } else {
                 selectedVariantID = nil
             }
+            refreshPreview()
         } catch {
             probe = nil
+            previewPlayer = nil
             analyzeError = "Não consegui analisar: \((error as NSError).localizedDescription)"
         }
     }
@@ -389,22 +357,151 @@ struct ContentView: View {
             fileExtension: probe.fileExtension
         )
         downloads.enqueue(request)
-        queueExpanded = true
+        selectedTab = .queue
     }
 }
 
-/// Player de prévia do link remoto (passo 02).
-struct RemotePreview: View {
-    let url: URL
-    @State private var player: AVPlayer
+// MARK: - Tela de downloads (fila)
 
-    init(url: URL) {
-        self.url = url
-        _player = State(initialValue: AVPlayer(url: url))
-    }
+struct QueueScreen: View {
+    @EnvironmentObject private var downloads: DownloadManager
+    @EnvironmentObject private var library: LibraryStore
+    @State private var playerItem: LibraryItem?
 
     var body: some View {
-        VideoPlayer(player: player)
-            .onDisappear { player.pause() }
+        NavigationStack {
+            Group {
+                if downloads.jobs.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "tray")
+                            .font(.system(size: 44))
+                            .foregroundColor(Theme.textDim)
+                        Text("Nenhum download")
+                            .font(.system(.subheadline, design: .monospaced))
+                            .foregroundColor(Theme.textDim)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            ForEach(downloads.jobs) { job in
+                                JobCard(job: job) { item in
+                                    playerItem = item
+                                }
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+            }
+            .background(Theme.background)
+            .navigationTitle("Downloads")
+            .fullScreenCover(item: $playerItem) { item in
+                PlayerScreen(url: library.url(for: item), title: item.title, isRemote: false)
+            }
+        }
+    }
+}
+
+struct JobCard: View {
+    @EnvironmentObject private var downloads: DownloadManager
+    @EnvironmentObject private var library: LibraryStore
+    @ObservedObject var job: DownloadJob
+    var onWatch: (LibraryItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                statusIcon
+                Text(job.title)
+                    .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                    .foregroundColor(Theme.textPrimary)
+                    .lineLimit(2)
+                Spacer()
+                Text(job.state.label)
+                    .font(.system(.caption2, design: .monospaced).weight(.bold))
+                    .foregroundColor(job.state == .failed ? Theme.danger : Theme.textDim)
+            }
+
+            ProgressView(value: job.progress)
+                .tint(Theme.lime)
+
+            HStack(spacing: 8) {
+                Text("\(Int(job.progress * 100))%")
+                    .foregroundColor(Theme.lime)
+                    .fontWeight(.bold)
+                if job.state == .downloading {
+                    Text(Format.speed(job.speedMBs))
+                    Text("· ETA \(Format.eta(job.etaSeconds))")
+                }
+                Text(Format.bytes(job.downloadedBytes))
+                if let total = job.totalBytes {
+                    Text("/ \(Format.bytes(total))")
+                }
+                if job.request.isHLS, !job.pieces.isEmpty {
+                    Text("· \(job.pieces.filter { $0.state == .done }.count)/\(job.pieces.count) seg")
+                }
+            }
+            .font(.system(.caption, design: .monospaced))
+            .foregroundColor(Theme.textDim)
+
+            if let error = job.errorMessage, job.state == .failed {
+                Text(error)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(Theme.danger)
+                    .lineLimit(3)
+            }
+
+            HStack(spacing: 10) {
+                Spacer()
+                if job.state == .downloading || job.state == .assembling {
+                    iconButton("pause.fill") { downloads.pause(job) }
+                }
+                if job.state == .paused || job.state == .failed || job.state == .queued {
+                    iconButton("play.fill", lime: true) { downloads.start(job) }
+                }
+                if job.state == .completed, let itemID = job.resultItemID,
+                   let item = library.items.first(where: { $0.id == itemID }) {
+                    iconButton("play.circle.fill", lime: true) { onWatch(item) }
+                }
+                if !job.state.isTerminal {
+                    iconButton("xmark") { downloads.cancel(job) }
+                }
+                iconButton("trash") { downloads.remove(job) }
+            }
+        }
+        .panelCard()
+    }
+
+    private var statusIcon: some View {
+        Group {
+            switch job.state {
+            case .downloading, .assembling:
+                Image(systemName: "arrow.down.circle.fill").foregroundColor(Theme.lime)
+            case .paused:
+                Image(systemName: "pause.circle.fill").foregroundColor(Theme.textDim)
+            case .completed:
+                Image(systemName: "checkmark.circle.fill").foregroundColor(Theme.lime)
+            case .failed:
+                Image(systemName: "exclamationmark.circle.fill").foregroundColor(Theme.danger)
+            case .cancelled:
+                Image(systemName: "xmark.circle.fill").foregroundColor(Theme.textDim)
+            case .queued:
+                Image(systemName: "clock.fill").foregroundColor(Theme.textDim)
+            }
+        }
+        .font(.system(size: 18))
+    }
+
+    private func iconButton(_ systemName: String, lime: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(lime ? .black : Theme.textPrimary)
+                .frame(width: 38, height: 32)
+                .background(lime ? Theme.lime : Color(white: 0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
     }
 }

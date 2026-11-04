@@ -142,7 +142,7 @@ struct Piece: Identifiable {
     var size: Int64 { max(0, end - start + 1) }
 }
 
-struct DownloadRequest {
+struct DownloadRequest: Codable {
     var title: String
     /// URL da mídia (arquivo direto ou playlist .m3u8 da qualidade escolhida).
     var mediaURL: URL
