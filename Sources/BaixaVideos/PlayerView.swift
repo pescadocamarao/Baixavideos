@@ -537,11 +537,26 @@ struct PlayerScreen: View {
     }
 
     private func capturePrint() async {
-        if let image = await controller.captureFrame() {
-            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-            showToast("Print salvo nas Fotos")
-        } else {
+        guard let image = await controller.captureFrame(),
+              let data = image.pngData() else {
             showToast("Não consegui capturar o quadro")
+            return
+        }
+        // Salva direto em Arquivos (Documents/Prints), sem passar pelo
+        // Rolo da Câmera e sem pedir permissão de Fotos.
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let printsDir = documents.appendingPathComponent("Prints", isDirectory: true)
+        try? FileManager.default.createDirectory(at: printsDir, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let safeTitle = LibraryStore.sanitizeFileName(title)
+        let fileURL = printsDir.appendingPathComponent(
+            "\(safeTitle)-\(formatter.string(from: Date())).png")
+        do {
+            try data.write(to: fileURL)
+            showToast("Print salvo em Arquivos · Prints")
+        } catch {
+            showToast("Falha ao salvar o print")
         }
     }
 

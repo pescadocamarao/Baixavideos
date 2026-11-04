@@ -22,6 +22,11 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Sem esta chave o iOS roda o app em modo de compatibilidade
+	     (letterbox, com faixas em cima e embaixo). Com ela, o app usa
+	     a tela inteira na resolução nativa do aparelho. -->
+	<key>UILaunchScreen</key>
+	<dict/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<!-- Detectar o VLC pra oferecer "abrir no VLC" a partir do player. -->
@@ -29,9 +34,6 @@
 	<array>
 		<string>vlc</string>
 	</array>
-	<!-- Salvar prints (quadros) do vídeo nas Fotos a partir do player. -->
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Salvar nas Fotos os prints que você capturar dos vídeos.</string>
 	<!-- Áudio em segundo plano: necessário pro Picture in Picture. -->
 	<key>UIBackgroundModes</key>
 	<array>
