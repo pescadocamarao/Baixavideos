@@ -22,11 +22,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<!-- Sem esta chave o iOS roda o app em modo de compatibilidade
-	     (letterbox, com faixas em cima e embaixo). Com ela, o app usa
-	     a tela inteira na resolução nativa do aparelho. -->
-	<key>UILaunchScreen</key>
-	<dict/>
+	<!-- Tela de lançamento de verdade (storyboard): é ela que tira o app
+	     do modo de compatibilidade (letterbox, "app de iPhone 4") e libera
+	     a tela inteira na resolução nativa do aparelho. A tentativa com
+	     UILaunchScreen vazio (v2.0.1) não foi suficiente neste iOS. -->
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<!-- Detectar o VLC pra oferecer "abrir no VLC" a partir do player. -->
