@@ -27,6 +27,12 @@ struct ContentView: View {
     @State private var queueExpanded = false
     @State private var playerItem: PlayerSheetItem?
     @State private var shareItem: ShareSheetItem?
+    @FocusState private var activeField: Field?
+
+    private enum Field {
+        case url
+        case title
+    }
 
     private let connectionOptions = [1, 4, 8, 16]
 
@@ -68,6 +74,13 @@ struct ContentView: View {
             }
             .background(Theme.background)
             .navigationTitle("BaixaVídeos")
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Concluir") { activeField = nil }
+                        .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
                 QueueBar(expanded: $queueExpanded)
@@ -91,6 +104,9 @@ struct ContentView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
+                .focused($activeField, equals: .url)
+                .submitLabel(.go)
+                .onSubmit { Task { await analyze() } }
                 .padding(10)
                 .background(Color(white: 0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -161,6 +177,7 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .id(mediaURL)
                 TextField("Título do vídeo", text: $title)
+                    .focused($activeField, equals: .title)
                     .font(.system(.subheadline, design: .monospaced))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -326,6 +343,7 @@ struct ContentView: View {
     // MARK: Ações
 
     private func analyze() async {
+        activeField = nil
         var raw = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !raw.contains("://") { raw = "https://" + raw }
         guard let url = URL(string: raw) else {
@@ -340,7 +358,7 @@ struct ContentView: View {
             probe = result
             title = result.suggestedTitle
             if result.kind == .hlsMaster {
-                selectedVariantID = result.variants.max(by: { $0.bandwidth < $1.bandwidth })?.id
+                selectedVariantID = result.variants.max(by: { ($0.height ?? 0, $0.bandwidth) < ($1.height ?? 0, $1.bandwidth) })?.id
             } else {
                 selectedVariantID = nil
             }
@@ -352,9 +370,16 @@ struct ContentView: View {
 
     private func enqueueDownload() {
         guard let probe, let mediaURL = selectedMediaURL else { return }
+        activeField = nil
         let isHLS = probe.kind != .file
+        var finalTitle = title.trimmingCharacters(in: .whitespaces)
+        if finalTitle.isEmpty { finalTitle = probe.suggestedTitle }
+        if finalTitle == probe.suggestedTitle, probe.kind == .hlsMaster,
+           let height = selectedVariant?.height {
+            finalTitle += " \(height)p"
+        }
         let request = DownloadRequest(
-            title: title.trimmingCharacters(in: .whitespaces).isEmpty ? probe.suggestedTitle : title,
+            title: finalTitle,
             mediaURL: mediaURL,
             isHLS: isHLS,
             qualityLabel: qualityLabel,

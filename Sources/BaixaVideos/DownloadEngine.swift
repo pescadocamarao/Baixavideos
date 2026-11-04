@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 // MARK: - Job
 
@@ -381,7 +382,7 @@ final class DownloadManager: ObservableObject {
         job.state = .assembling
         job.speedMBs = 0
         let files = job.pieces.map { segmentFile(job, pieceID: $0.id) }
-        let item = try assembleFile(job, piecesInOrder: files, expectedSize: nil)
+        let item = try await assembleHLS(job, segmentFiles: files)
         job.resultItemID = item.id
         job.state = .completed
         cleanTemp(job)
@@ -433,6 +434,79 @@ final class DownloadManager: ObservableObject {
         )
         library.add(item)
         return item
+    }
+
+    /// Junta os segmentos .ts e converte o resultado pra .mp4 (remux, sem
+    /// re-encodar: mesma qualidade, só troca o envelope), porque o .ts puro
+    /// não abre nos players padrão do iPhone.
+    private func assembleHLS(_ job: DownloadJob, segmentFiles: [URL]) async throws -> LibraryItem {
+        let merged = job.tempDirectory.appendingPathComponent("merged.ts")
+        var total: Int64 = 0
+        FileManager.default.createFile(atPath: merged.path, contents: nil)
+        let output = try FileHandle(forWritingTo: merged)
+        do {
+            for part in segmentFiles {
+                let input = try FileHandle(forReadingFrom: part)
+                while let chunk = try input.read(upToCount: 1_048_576), !chunk.isEmpty {
+                    try output.write(contentsOf: chunk)
+                    total += Int64(chunk.count)
+                }
+                try? input.close()
+            }
+            try output.close()
+        } catch {
+            try? output.close()
+            throw error
+        }
+
+        let mp4Name = library.uniqueFileName(title: job.request.title, extension: "mp4")
+        let mp4URL = library.videosDirectory.appendingPathComponent(mp4Name)
+        if await remuxToMP4(source: merged, destination: mp4URL) {
+            let item = LibraryItem(
+                id: UUID(),
+                title: job.request.title,
+                sourceURL: job.request.mediaURL.absoluteString,
+                qualityLabel: job.request.qualityLabel,
+                fileName: mp4Name,
+                fileSize: fileSize(mp4URL) ?? total,
+                createdAt: Date(),
+                isHLS: true
+            )
+            library.add(item)
+            return item
+        }
+
+        // Conversão falhou: guarda o .ts mesmo (abre em players como o VLC)
+        // em vez de perder o download.
+        let tsName = library.uniqueFileName(title: job.request.title, extension: "ts")
+        let tsURL = library.videosDirectory.appendingPathComponent(tsName)
+        try FileManager.default.moveItem(at: merged, to: tsURL)
+        let item = LibraryItem(
+            id: UUID(),
+            title: job.request.title,
+            sourceURL: job.request.mediaURL.absoluteString,
+            qualityLabel: job.request.qualityLabel,
+            fileName: tsName,
+            fileSize: total,
+            createdAt: Date(),
+            isHLS: true
+        )
+        library.add(item)
+        return item
+    }
+
+    /// Remux .ts → .mp4 com passthrough (sem re-encodar).
+    private func remuxToMP4(source: URL, destination: URL) async -> Bool {
+        let asset = AVURLAsset(url: source)
+        guard let session = AVAssetExportSession(
+            asset: asset, presetName: AVAssetExportPresetPassthrough
+        ) else { return false }
+        session.outputURL = destination
+        session.outputFileType = .mp4
+        await withCheckedContinuation { continuation in
+            session.exportAsynchronously { continuation.resume() }
+        }
+        return session.status == .completed
     }
 
     private func moveToLibrary(_ job: DownloadJob, source: URL, size: Int64) throws -> LibraryItem {

@@ -44,16 +44,35 @@ struct ProbeResult {
     }
 
     var suggestedTitle: String {
-        let base = suggestedFileName
-        let ext = (base as NSString).pathExtension
-        if ext.isEmpty { return base }
-        return (base as NSString).deletingPathExtension
+        // Nomes genéricos de playlist ("index", "master", "playlist"...) não dizem
+        // nada sobre o vídeo: sobe os componentes do caminho procurando o primeiro
+        // nome com significado real; se não achar, usa o domínio do site.
+        let generic: Set<String> = [
+            "index", "video", "stream", "streaming", "playlist", "master", "media",
+            "file", "files", "hls", "play", "player", "main", "movie", "watch",
+            "download", "output", "content", "data", "vid", "clip", "source",
+            "live", "vod", "mp4", "m3u8", "ts", "mov", "webm", "abr", "chunklist"
+        ]
+        let components = finalURL.pathComponents.filter { $0 != "/" }
+        for component in components.reversed() {
+            let stem = (component as NSString).deletingPathExtension
+            let lowered = stem.lowercased()
+            if stem.count < 3 { continue }
+            if generic.contains(lowered) { continue }
+            if Int(stem) != nil { continue }
+            if stem.count >= 12 && stem.allSatisfy({ $0.isHexDigit }) { continue }
+            return stem
+        }
+        if let host = finalURL.host, !host.isEmpty {
+            return host.replacingOccurrences(of: "www.", with: "")
+        }
+        return "video"
     }
 
     var fileExtension: String {
         switch kind {
         case .hlsMaster, .hlsMedia:
-            return "ts"
+            return "mp4"
         case .file:
             let ext = finalURL.pathExtension.lowercased()
             return ext.isEmpty ? "mp4" : ext
