@@ -11,7 +11,7 @@
 #     AD HOC com assinatura automática via chave de API do App Store
 #     Connect (-allowProvisioningUpdates), ExportOptions Ad Hoc gerado
 #     na hora, manifesto + página de instalação publicados na branch
-#     gh-pages. Instalar: abrir https://pescadocamarao.github.io/Github/
+#     gh-pages. Instalar: abrir https://pescadocamarao.github.io/Baixavideos/
 #     no Safari do iPhone e tocar em Instalar. O perfil Ad Hoc só inclui
 #     aparelhos registrados em Devices (o iPhone dele).
 #
@@ -246,7 +246,7 @@ jobs:
             exit 1
           fi
           echo "VERSAO=$VERSAO" >> "$GITHUB_ENV"
-          PAGES_BASE="https://pescadocamarao.github.io/Github"
+          PAGES_BASE="https://pescadocamarao.github.io/Baixavideos"
           IPA_SRC=$(find build/export-adhoc -maxdepth 1 -name "*.ipa" | head -n 1)
           if [ -z "$IPA_SRC" ]; then
             echo "::error::OTA FALHOU: nenhum .ipa em build/export-adhoc"
@@ -359,14 +359,14 @@ jobs:
             echo ""
             echo "Abra esta página **no Safari do iPhone** e toque em **Instalar**:"
             echo ""
-            echo "https://pescadocamarao.github.io/Github/"
+            echo "https://pescadocamarao.github.io/Baixavideos/"
             echo ""
-            echo "Página desta versão: https://pescadocamarao.github.io/Github/v${VERSAO}/"
+            echo "Página desta versão: https://pescadocamarao.github.io/Baixavideos/v${VERSAO}/"
             echo ""
             echo "O .ipa é Ad Hoc: só instala no iPhone registrado (UDID no perfil)."
             echo "Se a página der 404, ative o GitHub Pages (Settings → Pages → branch \`gh-pages\`, pasta raiz) e aguarde 1–2 minutos."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Link de instalação: https://pescadocamarao.github.io/Github/"
+          echo "Link de instalação: https://pescadocamarao.github.io/Baixavideos/"
 
       # ======================================================================
       # FIM DA ROTA OTA
