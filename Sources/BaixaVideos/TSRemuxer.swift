@@ -300,18 +300,36 @@ enum TSRemuxer {
                 let payload = Array(packet[payloadStart..<packetSize])
 
                 if pid == 0 {
-                    if pmtPID == nil { pmtPID = parsePAT(payload, pusi: pusi) }
+                    // PAT também pode mudar junto com a PMT (novo programa).
+                    if let found = parsePAT(payload, pusi: pusi) { pmtPID = found }
                     continue
                 }
                 if let pmt = pmtPID, pid == pmt {
-                    if video.pid < 0 {
-                        for stream in parsePMT(payload, pusi: pusi) {
-                            if stream.type == 0x1B, video.pid < 0 {
-                                video.pid = stream.pid; video.streamType = stream.type
-                            } else if stream.type == 0x0F, audio.pid < 0 {
-                                audio.pid = stream.pid; audio.streamType = stream.type
-                            }
+                    // A PMT pode MUDAR no meio do stream (abertura/anúncio
+                    // costurado com PID próprio, conteúdo principal com
+                    // outro). Quem trava na primeira PMT só enxerga a
+                    // abertura — foi o bug do arquivo de 15 segundos.
+                    // Aqui o parser SEGUE a PMT vigente.
+                    var newVideoPID = -1
+                    var newAudioPID = -1
+                    for stream in parsePMT(payload, pusi: pusi) {
+                        if stream.type == 0x1B, newVideoPID < 0 {
+                            newVideoPID = stream.pid
+                        } else if stream.type == 0x0F, newAudioPID < 0 {
+                            newAudioPID = stream.pid
                         }
+                    }
+                    if newVideoPID >= 0, newVideoPID != video.pid {
+                        flushPES()
+                        video.pid = newVideoPID
+                        video.streamType = 0x1B
+                        videoUnwrap = Unwrapper()
+                    }
+                    if newAudioPID >= 0, newAudioPID != audio.pid {
+                        flushPES()
+                        audio.pid = newAudioPID
+                        audio.streamType = 0x0F
+                        audioUnwrap = Unwrapper()
                     }
                     continue
                 }
