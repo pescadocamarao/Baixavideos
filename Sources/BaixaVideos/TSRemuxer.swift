@@ -602,11 +602,15 @@ enum MP4Writer {
                     startShiftUnits: audioShiftUnits,
                     config: config))
             }
-            let mvhd = fullBox("mvhd", version: 0, flags: 0,
-                u32(epoch) + u32(epoch) + u32(1000) + u32(UInt32(movieDurationMs))
-                + u32(0x0001_0000) + u16(0x0100) + u16(0)
-                + u32(0) + u32(0) + matrix
-                + (0..<6).flatMap { u32(0) } + u32(3))
+            var mvhdPayload: [UInt8] = []
+            mvhdPayload += u32(epoch) + u32(epoch) + u32(1000)
+            mvhdPayload += u32(UInt32(movieDurationMs))
+            mvhdPayload += u32(0x0001_0000) + u16(0x0100) + u16(0)
+            mvhdPayload += u32(0) + u32(0)
+            mvhdPayload += matrix
+            for _ in 0..<6 { mvhdPayload += u32(0) }
+            mvhdPayload += u32(3)
+            let mvhd = fullBox("mvhd", version: 0, flags: 0, mvhdPayload)
             return box("moov", mvhd + tracks.flatMap { $0 })
         }
         _ = videoFirstPts
@@ -679,12 +683,15 @@ enum MP4Writer {
                                    sps: [UInt8], pps: [UInt8],
                                    dimensions: (width: Int, height: Int)) -> [UInt8] {
         let duration90 = durations.reduce(0, +)
-        let tkhd = fullBox("tkhd", version: 0, flags: 0x7,
-            u32(epoch) + u32(epoch) + u32(1) + u32(0) + u32(durationMs)
-            + u32(0) + u32(0)
-            + u16(0) + u16(0) + u16(0) + u16(0)
-            + matrix
-            + u32(UInt32(dimensions.width) << 16) + u32(UInt32(dimensions.height) << 16))
+        var tkhdPayload: [UInt8] = []
+        tkhdPayload += u32(epoch) + u32(epoch) + u32(1) + u32(0)
+        tkhdPayload += u32(durationMs)
+        tkhdPayload += u32(0) + u32(0)
+        tkhdPayload += u16(0) + u16(0) + u16(0) + u16(0)
+        tkhdPayload += matrix
+        tkhdPayload += u32(UInt32(dimensions.width) << 16)
+        tkhdPayload += u32(UInt32(dimensions.height) << 16)
+        let tkhd = fullBox("tkhd", version: 0, flags: 0x7, tkhdPayload)
         let mdhd = fullBox("mdhd", version: 0, flags: 0,
             u32(epoch) + u32(epoch) + u32(90000) + u32(UInt32(duration90))
             + u16(0x55C4) + u16(0)) // idioma "und"
@@ -753,11 +760,14 @@ enum MP4Writer {
                                    durationMs: UInt32,
                                    startShiftUnits: Int64,
                                    config: (profile: Int, sampleRateIndex: Int, sampleRate: Int, channels: Int)) -> [UInt8] {
-        let tkhd = fullBox("tkhd", version: 0, flags: 0x7,
-            u32(epoch) + u32(epoch) + u32(2) + u32(0) + u32(durationMs)
-            + u32(0) + u32(0)
-            + u16(0) + u16(0) + u16(0x0100) + u16(0)
-            + matrix + u32(0) + u32(0))
+        var tkhdPayload: [UInt8] = []
+        tkhdPayload += u32(epoch) + u32(epoch) + u32(2) + u32(0)
+        tkhdPayload += u32(durationMs)
+        tkhdPayload += u32(0) + u32(0)
+        tkhdPayload += u16(0) + u16(0) + u16(0x0100) + u16(0)
+        tkhdPayload += matrix
+        tkhdPayload += u32(0) + u32(0)
+        let tkhd = fullBox("tkhd", version: 0, flags: 0x7, tkhdPayload)
         let durationUnits = durations.reduce(0, +)
         let mdhd = fullBox("mdhd", version: 0, flags: 0,
             u32(epoch) + u32(epoch) + u32(UInt32(config.sampleRate))
