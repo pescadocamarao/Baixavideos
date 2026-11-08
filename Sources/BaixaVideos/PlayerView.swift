@@ -242,6 +242,30 @@ struct PlayerScreen: View {
 
             if showControls { controlsOverlay }
 
+            // Botão Voltar SEMPRE visível (não some com os controles):
+            // é a saída óbvia do player de volta pro app.
+            VStack {
+                HStack {
+                    Button { dismiss() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 13, weight: .bold))
+                            Text("Voltar")
+                                .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Capsule())
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                Spacer()
+            }
+
             if let toast {
                 VStack {
                     Spacer()
@@ -342,10 +366,8 @@ struct PlayerScreen: View {
         ZStack {
             VStack {
                 HStack(spacing: 14) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 17, weight: .bold))
-                    }
+                    // Espaço do botão Voltar fixo (fora do overlay).
+                    Color.clear.frame(width: 88, height: 1)
                     Text(title)
                         .font(.system(.subheadline, design: .monospaced).weight(.semibold))
                         .lineLimit(1)

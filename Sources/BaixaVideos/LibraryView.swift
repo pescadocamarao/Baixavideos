@@ -201,10 +201,7 @@ struct LibraryView: View {
     }
 
     private func row(_ item: LibraryItem) -> some View {
-        Button {
-            if library.fileExists(item) { playerTarget = item }
-        } label: {
-            HStack(spacing: 12) {
+        HStack(spacing: 12) {
                 VideoThumbnail(url: library.url(for: item))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title)
@@ -235,13 +232,24 @@ struct LibraryView: View {
                     }
                 }
                 Spacer()
+                Button {
+                    shareItem = ShareSheetItem(url: library.url(for: item))
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
                 Image(systemName: "play.circle.fill")
                     .font(.system(size: 24))
                     .foregroundColor(Theme.lime)
             }
             .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if library.fileExists(item) { playerTarget = item }
         }
-        .buttonStyle(.plain)
         .listRowBackground(Theme.panel)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) { deleteTarget = item } label: {
@@ -273,6 +281,11 @@ struct LibraryView: View {
                 shareItem = ShareSheetItem(url: library.url(for: item))
             } label: {
                 Label("Compartilhar", systemImage: "square.and.arrow.up")
+            }
+            Button {
+                shareItem = ShareSheetItem(url: library.url(for: item))
+            } label: {
+                Label("Salvar em Arquivos", systemImage: "folder")
             }
             Button {
                 renameText = item.title

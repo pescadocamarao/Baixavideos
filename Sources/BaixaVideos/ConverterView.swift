@@ -32,6 +32,14 @@ struct ConverterView: View {
 
     @State private var linkText = ""
     @State private var isConvertingLink = false
+    @State private var isProbingWatch = false
+    @State private var streamTarget: StreamTarget?
+
+    private struct StreamTarget: Identifiable {
+        let id = UUID()
+        let url: URL
+        let title: String
+    }
     @State private var convertingItemID: UUID?
     @State private var isImporting = false
     @State private var showImporter = false
@@ -63,6 +71,9 @@ struct ConverterView: View {
             .padding(16)
         }
         .background(Theme.background.ignoresSafeArea())
+        .fullScreenCover(item: $streamTarget) { target in
+            PlayerScreen(url: target.url, title: target.title, isRemote: true)
+        }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: Self.importTypes,
@@ -84,34 +95,50 @@ struct ConverterView: View {
             Label("Link .m3u8", systemImage: "link")
                 .font(.headline)
                 .foregroundColor(Theme.textPrimary)
+            TextField("https://…/video.m3u8", text: $linkText)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                .padding(12)
+                .background(Theme.panel)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .foregroundColor(Theme.textPrimary)
             HStack(spacing: 10) {
-                TextField("https://…/video.m3u8", text: $linkText)
-                    .textFieldStyle(.plain)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .padding(12)
-                    .background(Theme.panel)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .foregroundColor(Theme.textPrimary)
+                Button {
+                    watchLink()
+                } label: {
+                    if isProbingWatch {
+                        ProgressView().tint(Theme.lime)
+                    } else {
+                        Label("Assistir", systemImage: "play.fill")
+                            .fontWeight(.semibold)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Theme.panel)
+                .foregroundColor(Theme.lime)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .disabled(isProbingWatch || linkText.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button {
                     convertLink()
                 } label: {
                     if isConvertingLink {
-                        ProgressView().tint(Theme.lime)
+                        ProgressView().tint(.black)
                     } else {
                         Text("Converter")
                             .fontWeight(.semibold)
                     }
                 }
-                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(Theme.lime)
                 .foregroundColor(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .disabled(isConvertingLink || linkText.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            Text("O vídeo entra na fila de Downloads e chega na Biblioteca já em .mp4.")
+            Text("Assistir toca o .m3u8 na hora no player do app, sem baixar e sem VLC. Converter entra na fila de Downloads e chega na Biblioteca já em .mp4.")
                 .font(.footnote)
                 .foregroundColor(Theme.textDim)
         }
@@ -151,6 +178,38 @@ struct ConverterView: View {
                 downloads.start(job)
                 statusMessage = "Convertendo “\(probe.suggestedTitle)” — acompanha na aba Downloads."
                 selectedTab = .queue
+            } catch {
+                statusMessage = "Não consegui analisar esse link. Confere o endereço e tenta de novo."
+            }
+        }
+    }
+
+    /// Streaming direto do .m3u8 no player interno (AVPlayer toca HLS
+    /// nativamente) — sem baixar e sem sair pro VLC.
+    private func watchLink() {
+        let raw = linkText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            statusMessage = "Cola um link .m3u8 válido."
+            return
+        }
+        isProbingWatch = true
+        Task {
+            defer { isProbingWatch = false }
+            do {
+                let probe = try await ProbeService.probe(url: url)
+                if probe.kind == .file {
+                    streamTarget = StreamTarget(url: probe.finalURL, title: probe.suggestedTitle)
+                    return
+                }
+                let best = probe.variants.max {
+                    ($0.height ?? 0, $0.bandwidth) < ($1.height ?? 0, $1.bandwidth)
+                }
+                streamTarget = StreamTarget(
+                    url: best?.url ?? probe.finalURL,
+                    title: probe.suggestedTitle
+                )
             } catch {
                 statusMessage = "Não consegui analisar esse link. Confere o endereço e tenta de novo."
             }

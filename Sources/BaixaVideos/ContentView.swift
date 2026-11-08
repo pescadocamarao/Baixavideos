@@ -275,10 +275,26 @@ struct DownloadScreen: View {
             .foregroundColor(Theme.textDim)
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button { enqueueDownload() } label: {
-                Label("Baixar", systemImage: "arrow.down.to.line")
+            HStack(spacing: 10) {
+                Button { showFullPlayer = true } label: {
+                    Label("Assistir", systemImage: "play.fill")
+                        .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                }
+                .background(Theme.panel)
+                .foregroundColor(Theme.lime)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Theme.panelBorder, lineWidth: 1)
+                )
+
+                Button { enqueueDownload() } label: {
+                    Label("Baixar", systemImage: "arrow.down.to.line")
+                }
+                .buttonStyle(LimeButtonStyle())
             }
-            .buttonStyle(LimeButtonStyle())
         }
     }
 
