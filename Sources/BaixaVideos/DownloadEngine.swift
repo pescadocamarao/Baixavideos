@@ -559,6 +559,13 @@ final class DownloadManager: ObservableObject {
     /// player abre preto/dá erro. Se não validar, segunda tentativa com
     /// re-encode (H.264/AAC), que conserta o arquivo.
     private func remuxToMP4(source: URL, destination: URL) async -> Bool {
+        // Primeiro o remuxador interno: o AVFoundation não lê vários
+        // .ts locais (a exportação falha e o player abre 0:00).
+        if await TSRemuxer.remux(source: source, destination: destination),
+           await isPlayableFile(destination) {
+            return true
+        }
+        try? FileManager.default.removeItem(at: destination)
         if await exportMP4(source: source, destination: destination,
                            preset: AVAssetExportPresetPassthrough),
            await isPlayableFile(destination) {

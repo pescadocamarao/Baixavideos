@@ -49,8 +49,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.seidao.baixavideos
         PRODUCT_NAME: BaixaVideos
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "2.2.1"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "2.3.0"
+        CURRENT_PROJECT_VERSION: "9"
         GENERATE_INFOPLIST_FILE: "NO"
         INFOPLIST_FILE: Sources/BaixaVideos/Info.plist
         TARGETED_DEVICE_FAMILY: "1"

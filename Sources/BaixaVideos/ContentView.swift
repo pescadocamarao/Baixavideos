@@ -2,6 +2,15 @@ import SwiftUI
 import AVKit
 import UIKit
 
+/// Versão real do app instalado, lida do pacote — pra ele sempre saber
+/// qual versão está rodando (a UI não mostrava e gerava confusão).
+enum AppInfo {
+    static var version: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+    }
+    static var versionLabel: String { "BaixaVídeos v\(version)" }
+}
+
 // MARK: - Raiz (abas)
 
 struct ContentView: View {
@@ -90,6 +99,11 @@ struct DownloadScreen: View {
                 VStack(spacing: 16) {
                     urlCard
                     if let probe { resultSection(probe) }
+                    Text(AppInfo.versionLabel)
+                        .font(.caption2)
+                        .foregroundColor(Theme.textDim)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 8)
                 }
                 .padding(16)
             }

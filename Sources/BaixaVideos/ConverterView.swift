@@ -4,12 +4,18 @@ import UniformTypeIdentifiers
 
 // MARK: - Remux .ts → .mp4 (mesma receita do motor de download)
 
-/// Remux .ts → .mp4: passthrough primeiro (rápido, sem re-encodar);
-/// o resultado é validado (abre? tem vídeo? tem duração?) e, se não
-/// prestar, cai pro re-encode (H.264/AAC), que conserta o arquivo —
-/// mesma receita do motor de download.
+/// Remux .ts → .mp4 em três tentativas: (1) remuxador interno do app
+/// (lê o TS com as próprias mãos — o AVFoundation não lê vários .ts
+/// locais), (2) passthrough do AVFoundation, (3) re-encode. Cada
+/// resultado é validado (abre? tem vídeo? tem duração?).
 enum Remuxer {
     static func remuxToMP4(source: URL, destination: URL) async -> Bool {
+        if source.pathExtension.lowercased() == "ts",
+           await TSRemuxer.remux(source: source, destination: destination),
+           await isPlayableFile(destination) {
+            return true
+        }
+        try? FileManager.default.removeItem(at: destination)
         if await exportMP4(source: source, destination: destination,
                            preset: AVAssetExportPresetPassthrough),
            await isPlayableFile(destination) {
@@ -92,6 +98,12 @@ struct ConverterView: View {
                         .font(.footnote)
                         .foregroundColor(Theme.textDim)
                 }
+
+                Text(AppInfo.versionLabel)
+                    .font(.caption2)
+                    .foregroundColor(Theme.textDim)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 8)
             }
             .padding(16)
         }
@@ -301,7 +313,8 @@ struct ConverterView: View {
                 library.markConverted(item, newFileName: name, newSize: fileSize(destination) ?? item.fileSize)
                 statusMessage = "“\(item.title)” convertido pra .mp4."
             } else {
-                statusMessage = "Não consegui converter “\(item.title)”. O .ts continua na Biblioteca (abre no VLC)."
+                let probe = TSRemuxer.probe(url: source)
+                statusMessage = "Não consegui converter “\(item.title)” (detectado: \(probe.summary)). O .ts continua na Biblioteca (abre no VLC)."
             }
         }
     }
@@ -378,7 +391,8 @@ struct ConverterView: View {
                         fileSize: fileSize(tsDestination) ?? 0,
                         createdAt: Date(), isHLS: true
                     ))
-                    statusMessage = "Não deu pra converter — guardei o .ts na Biblioteca (abre no VLC)."
+                    let probe = TSRemuxer.probe(url: staging)
+                    statusMessage = "Não deu pra converter (detectado: \(probe.summary)) — guardei o .ts na Biblioteca (abre no VLC)."
                 }
             } else {
                 let finalExt = ext.isEmpty ? "mp4" : ext
