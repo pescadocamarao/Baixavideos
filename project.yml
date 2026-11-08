@@ -11,15 +11,48 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - path: Sources/BaixaVideos
+    # v2.1 — O Info.plist INTEIRO mora nestas properties. Motivo (lição da
+    # saga da tela cheia, provada no Yegen): a cada `xcodegen generate` o
+    # XcodeGen REESCREVE o arquivo do info.path mesclando defaults com
+    # estas properties e DESCARTA o conteúdo que estava no arquivo.
+    # Sem properties, o pacote saía com o plist padrão (sem
+    # UILaunchStoryboardName = letterbox "app de iPhone 4", região en,
+    # versão literal 1.0/1) mesmo com o Info.plist do repo perfeito.
     info:
       path: Sources/BaixaVideos/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: pt_BR
+        CFBundleDisplayName: BaixaVídeos
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchStoryboardName: LaunchScreen
+        ITSAppUsesNonExemptEncryption: false
+        LSApplicationQueriesSchemes:
+          - vlc
+        UIBackgroundModes:
+          - audio
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.seidao.baixavideos
         PRODUCT_NAME: BaixaVideos
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "2.0.2"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "6"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: Sources/BaixaVideos/Info.plist
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: "YES"

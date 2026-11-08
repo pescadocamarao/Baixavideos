@@ -12,6 +12,7 @@ struct ContentView: View {
         case download
         case queue
         case library
+        case converter
     }
 
     var body: some View {
@@ -28,6 +29,10 @@ struct ContentView: View {
             LibraryView()
                 .tabItem { Label("Biblioteca", systemImage: "film.stack") }
                 .tag(AppTab.library)
+
+            ConverterView(selectedTab: $tab)
+                .tabItem { Label("Converter", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(AppTab.converter)
         }
         .tint(Theme.lime)
     }

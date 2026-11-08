@@ -57,6 +57,19 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
+    /// Troca o arquivo de um item por outro já gravado em Documents/Videos
+    /// (conversão .ts → .mp4) e apaga o arquivo antigo.
+    func markConverted(_ item: LibraryItem, newFileName: String, newSize: Int64) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let oldURL = url(for: items[index])
+        items[index].fileName = newFileName
+        items[index].fileSize = newSize
+        if oldURL.lastPathComponent != newFileName {
+            try? FileManager.default.removeItem(at: oldURL)
+        }
+        save()
+    }
+
     /// Gera um nome de arquivo único dentro de Documents/Videos.
     func uniqueFileName(title: String, extension ext: String) -> String {
         let base = Self.sanitizeFileName(title)
