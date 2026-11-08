@@ -551,13 +551,41 @@ enum MP4Writer {
         + u32(0) + u32(0x0001_0000) + u32(0) + u32(0) + u32(0) + u32(0x4000_0000)
     private static let epoch: UInt32 = 2_082_844_800 // 1904 → 1970
 
+    /// O TS montado de pedaços de HLS costuma ter carimbos de tempo com
+    /// saltos e voltas nas emendas — o player engasga nisso (o VLC
+    /// perdoa, o do iPhone não). Reconstrói a linha do tempo do vídeo:
+    /// DTS sempre crescente, com o passo típico (mediana) nas emendas.
+    private static func retimed(_ track: TSRemuxer.TrackData) -> TSRemuxer.TrackData {
+        guard track.samples.count > 2 else { return track }
+        var deltas: [Int64] = []
+        for index in 1..<track.samples.count {
+            let delta = track.samples[index].dts - track.samples[index - 1].dts
+            if delta > 0 { deltas.append(delta) }
+        }
+        guard !deltas.isEmpty else { return track }
+        let median = deltas.sorted()[deltas.count / 2]
+        var fixed = track
+        var lastDts = fixed.samples[0].dts
+        for index in 1..<fixed.samples.count {
+            var dts = fixed.samples[index].dts
+            let delta = dts - lastDts
+            if delta <= 0 || delta > 4 * median { dts = lastDts + median }
+            let cto = max(0, fixed.samples[index].pts - fixed.samples[index].dts)
+            fixed.samples[index].dts = dts
+            fixed.samples[index].pts = dts + cto
+            lastDts = dts
+        }
+        return fixed
+    }
+
     static func write(destination: URL,
-                      video: TSRemuxer.TrackData,
+                      video rawVideo: TSRemuxer.TrackData,
                       audio: TSRemuxer.TrackData,
                       sps: [UInt8], pps: [UInt8],
                       dimensions: (width: Int, height: Int),
                       audioConfig: (profile: Int, sampleRateIndex: Int, sampleRate: Int, channels: Int)?,
                       videoTmp: URL, audioTmp: URL) -> Bool {
+        let video = retimed(rawVideo)
         // Sincronia entre as faixas: o início global é o menor primeiro
         // carimbo; o atraso de cada faixa vira deslocamento de composição
         // (ctts) — mecanismo padrão, sem listas de edição.
