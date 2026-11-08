@@ -4,22 +4,47 @@ import UniformTypeIdentifiers
 
 // MARK: - Remux .ts → .mp4 (mesma receita do motor de download)
 
-/// Remux com passthrough: troca só o envelope (.ts → .mp4), sem
-/// re-encodar — mesma qualidade, conversão rápida.
+/// Remux .ts → .mp4: passthrough primeiro (rápido, sem re-encodar);
+/// o resultado é validado (abre? tem vídeo? tem duração?) e, se não
+/// prestar, cai pro re-encode (H.264/AAC), que conserta o arquivo —
+/// mesma receita do motor de download.
 enum Remuxer {
     static func remuxToMP4(source: URL, destination: URL) async -> Bool {
+        if await exportMP4(source: source, destination: destination,
+                           preset: AVAssetExportPresetPassthrough),
+           await isPlayableFile(destination) {
+            return true
+        }
+        try? FileManager.default.removeItem(at: destination)
+        if await exportMP4(source: source, destination: destination,
+                           preset: AVAssetExportPresetHighestQuality),
+           await isPlayableFile(destination) {
+            return true
+        }
+        try? FileManager.default.removeItem(at: destination)
+        return false
+    }
+
+    private static func exportMP4(source: URL, destination: URL, preset: String) async -> Bool {
         let asset = AVURLAsset(url: source)
-        guard let session = AVAssetExportSession(
-            asset: asset, presetName: AVAssetExportPresetPassthrough
-        ) else { return false }
+        guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
+            return false
+        }
         session.outputURL = destination
         session.outputFileType = .mp4
         await withCheckedContinuation { continuation in
             session.exportAsynchronously { continuation.resume() }
         }
-        if session.status == .completed { return true }
-        try? FileManager.default.removeItem(at: destination)
-        return false
+        return session.status == .completed
+    }
+
+    private static func isPlayableFile(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        guard let playable = try? await asset.load(.isPlayable), playable else { return false }
+        guard let tracks = try? await asset.loadTracks(withMediaType: .video),
+              !tracks.isEmpty else { return false }
+        guard let duration = try? await asset.load(.duration) else { return false }
+        return duration.seconds > 0
     }
 }
 

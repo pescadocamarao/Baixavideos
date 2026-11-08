@@ -553,18 +553,49 @@ final class DownloadManager: ObservableObject {
         return item
     }
 
-    /// Remux .ts → .mp4 com passthrough (sem re-encodar).
+    /// Remux .ts → .mp4. Primeira tentativa: passthrough (sem re-encodar,
+    /// rápido). O resultado é VALIDADO de verdade (abre? tem vídeo? tem
+    /// duração?) — passthrough de certos conteúdos gera um .mp4 que o
+    /// player abre preto/dá erro. Se não validar, segunda tentativa com
+    /// re-encode (H.264/AAC), que conserta o arquivo.
     private func remuxToMP4(source: URL, destination: URL) async -> Bool {
+        if await exportMP4(source: source, destination: destination,
+                           preset: AVAssetExportPresetPassthrough),
+           await isPlayableFile(destination) {
+            return true
+        }
+        try? FileManager.default.removeItem(at: destination)
+        if await exportMP4(source: source, destination: destination,
+                           preset: AVAssetExportPresetHighestQuality),
+           await isPlayableFile(destination) {
+            return true
+        }
+        try? FileManager.default.removeItem(at: destination)
+        return false
+    }
+
+    private func exportMP4(source: URL, destination: URL, preset: String) async -> Bool {
         let asset = AVURLAsset(url: source)
-        guard let session = AVAssetExportSession(
-            asset: asset, presetName: AVAssetExportPresetPassthrough
-        ) else { return false }
+        guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
+            return false
+        }
         session.outputURL = destination
         session.outputFileType = .mp4
         await withCheckedContinuation { continuation in
             session.exportAsynchronously { continuation.resume() }
         }
         return session.status == .completed
+    }
+
+    /// Um .mp4 só é aceito se o AVFoundation confirma: é tocável, tem
+    /// faixa de vídeo e tem duração.
+    private func isPlayableFile(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        guard let playable = try? await asset.load(.isPlayable), playable else { return false }
+        guard let tracks = try? await asset.loadTracks(withMediaType: .video),
+              !tracks.isEmpty else { return false }
+        guard let duration = try? await asset.load(.duration) else { return false }
+        return duration.seconds > 0
     }
 
     private func moveToLibrary(_ job: DownloadJob, source: URL, size: Int64) throws -> LibraryItem {

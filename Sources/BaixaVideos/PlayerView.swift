@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import AVFoundation
+import CoreImage
 import MediaPlayer
 import UIKit
 
@@ -67,14 +68,47 @@ final class PlayerController: ObservableObject {
         }
     }
 
+    private var videoOutput: AVPlayerItemVideoOutput?
+
     func captureFrame() async -> UIImage? {
-        guard let asset = player.currentItem?.asset else { return nil }
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
-        if let cgImage = try? generator.copyCGImage(at: player.currentTime(), actualTime: nil) {
-            return UIImage(cgImage: cgImage)
+        // Caminho 1: gerador de imagens — ótimo pra arquivo local.
+        if let asset = player.currentItem?.asset {
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: player.currentTime(), actualTime: nil) {
+                return UIImage(cgImage: cgImage)
+            }
+        }
+        // Caminho 2: saída de vídeo do item que está tocando — é o que
+        // salva a captura durante streaming HLS, onde o gerador falha.
+        return await captureFromVideoOutput()
+    }
+
+    private func captureFromVideoOutput() async -> UIImage? {
+        guard let item = player.currentItem else { return nil }
+        if videoOutput == nil {
+            let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            ])
+            item.add(output)
+            videoOutput = output
+        }
+        guard let output = videoOutput else { return nil }
+        // A saída leva uns instantes pra produzir o primeiro quadro.
+        for _ in 0..<8 {
+            if let buffer = output.copyPixelBuffer(
+                forItemTime: player.currentTime(), itemTimeForDisplay: nil
+            ) {
+                let ciImage = CIImage(cvPixelBuffer: buffer)
+                let context = CIContext()
+                if let cgImage = context.createCGImage(ciImage, from: ciImage.extent) {
+                    return UIImage(cgImage: cgImage)
+                }
+                return nil
+            }
+            try? await Task.sleep(nanoseconds: 120_000_000)
         }
         return nil
     }
