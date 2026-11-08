@@ -1,14 +1,48 @@
+# ============================================================================
+# BaixaVídeos — workflow v6 (v2.1 do app)
+# Rotas:
+#   • PADRÃO (push na main ou disparo manual sem interruptores): compila o
+#     IPA SEM assinatura (artifact "BaixaVideos-unsigned-ipa"), com a step
+#     "Conferir o pacote" abrindo o .ipa e FALHANDO a run se o Info.plist
+#     embutido não tiver UILaunchStoryboardName ou a versão não bater com
+#     o project.yml (blindagem contra o defeito do plist padrão gerado
+#     pelo XcodeGen = app em letterbox "iPhone 4" e versão 1.0/1).
+#   • OTA (disparo manual com "instalar_ota" = true): archive assinado
+#     AD HOC com assinatura automática via chave de API do App Store
+#     Connect (-allowProvisioningUpdates), ExportOptions Ad Hoc gerado
+#     na hora, manifesto + página de instalação publicados na branch
+#     gh-pages. Instalar: abrir https://pescadocamarao.github.io/Github/
+#     no Safari do iPhone e tocar em Instalar. O perfil Ad Hoc só inclui
+#     aparelhos registrados em Devices (o iPhone dele).
+#
+# SEGREDOS que precisam existir NESTE repo (Settings → Secrets → Actions):
+#   ASC_KEY_ID     → Key ID da chave de API (10 caracteres)
+#   ASC_ISSUER_ID  → Issuer ID da conta (formato UUID)
+#   ASC_KEY_BASE64 → conteúdo do arquivo .p8 convertido em base64
+#   TEAM_ID        → Team ID da conta de desenvolvedor (10 caracteres)
+# São os MESMOS valores já cadastrados no repo do Yegen.
+# NUNCA coloque valores reais neste arquivo.
+# ============================================================================
+
 name: Build IPA
+
+permissions:
+  contents: write
 
 on:
   workflow_dispatch:
+    inputs:
+      instalar_ota:
+        description: "Publicar a build assinada (Ad Hoc) com link de instalação OTA no iPhone"
+        type: boolean
+        default: false
   push:
     branches:
       - main
 
 jobs:
   build:
-    name: Build unsigned IPA
+    name: Build IPA
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -22,6 +56,7 @@ jobs:
 
       - name: Compilar (sem assinatura)
         run: |
+          set -o pipefail
           xcodebuild \
             -project BaixaVideos.xcodeproj \
             -scheme BaixaVideos \
@@ -32,7 +67,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            -derivedDataPath build/DerivedData
+            -derivedDataPath build/DerivedData 2>&1 | tee build-full-log.txt
 
       - name: Empacotar o .ipa (sem assinatura)
         run: |
@@ -44,9 +79,336 @@ jobs:
           zip -r BaixaVideos-unsigned.ipa Payload
           ls -lh BaixaVideos-unsigned.ipa
 
+      # Autópsia automática do .ipa: garante UILaunchStoryboardName e a
+      # versão real dentro do pacote antes de qualquer entrega.
+      - name: Conferir o pacote
+        run: |
+          set -e
+          TMP=$(mktemp -d)
+          unzip -q BaixaVideos-unsigned.ipa -d "$TMP"
+          APP_PLIST=$(find "$TMP/Payload" -maxdepth 2 -name "Info.plist" -path "*.app/*" | head -n 1)
+          echo "Info.plist do pacote: $APP_PLIST"
+          if [ -z "$APP_PLIST" ]; then
+            echo "::error::CONFERÊNCIA DO PACOTE FALHOU: Info.plist não encontrado dentro do .ipa"
+            exit 1
+          fi
+          LAUNCH=$(/usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" "$APP_PLIST" 2>/dev/null || true)
+          if [ -z "$LAUNCH" ]; then
+            echo "::error::CONFERÊNCIA DO PACOTE FALHOU: UILaunchStoryboardName AUSENTE no Info.plist embutido — pacote com plist padrão gerado (sem Launch Screen = letterbox). Confira o info.properties no project.yml."
+            exit 1
+          fi
+          echo "UILaunchStoryboardName embutido: $LAUNCH"
+          ESPERADA=$(grep -E '^[[:space:]]+MARKETING_VERSION:' project.yml | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          EMBUTIDA=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST" 2>/dev/null || true)
+          echo "Versão esperada (project.yml): $ESPERADA | embutida no pacote: $EMBUTIDA"
+          if [ "$EMBUTIDA" != "$ESPERADA" ]; then
+            echo "::error::CONFERÊNCIA DO PACOTE FALHOU: CFBundleShortVersionString embutido ($EMBUTIDA) não bate com o project.yml ($ESPERADA)."
+            exit 1
+          fi
+          echo "Pacote conferido e aprovado: Launch Screen presente e versão $EMBUTIDA."
+
       - name: Subir o .ipa como artifact
         uses: actions/upload-artifact@v4
         with:
           name: BaixaVideos-unsigned-ipa
           path: BaixaVideos-unsigned.ipa
           if-no-files-found: error
+
+      # ======================================================================
+      # ROTA OTA — só com instalar_ota = true (manual)
+      # ======================================================================
+
+      - name: "OTA 0 — Conferir segredos"
+        if: ${{ inputs.instalar_ota }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+        run: |
+          falhou=0
+          conferir() {
+            nome="$1"; valor="$2"; esperado="$3"
+            tam=${#valor}
+            echo "$nome: $tam caracteres"
+            if [[ $tam -eq 0 ]]; then
+              echo "::error::SEGREDO AUSENTE: $nome — cadastrar em Settings → Secrets and variables → Actions → Repository secrets"
+              falhou=1
+            elif [[ $tam -ne $esperado ]]; then
+              echo "::warning::$nome com tamanho inesperado: $tam caracteres (esperado: $esperado) — confira o valor cadastrado"
+            fi
+          }
+          conferir "ASC_KEY_ID" "$ASC_KEY_ID" 10
+          conferir "ASC_ISSUER_ID" "$ASC_ISSUER_ID" 36
+          conferir "TEAM_ID" "$TEAM_ID" 10
+          echo "ASC_KEY_BASE64: ${#ASC_KEY_BASE64} caracteres"
+          if [[ ${#ASC_KEY_BASE64} -eq 0 ]]; then
+            echo "::error::SEGREDO AUSENTE: ASC_KEY_BASE64 — cadastrar em Settings → Secrets and variables → Actions → Repository secrets"
+            falhou=1
+          elif [[ ${#ASC_KEY_BASE64} -le 100 ]]; then
+            echo "::warning::ASC_KEY_BASE64 curto demais: ${#ASC_KEY_BASE64} caracteres (esperado: mais de 100) — confira o valor cadastrado"
+          fi
+          if [[ $falhou -ne 0 ]]; then
+            echo "Abortando antes da build: cadastre os segredos ausentes e dispare de novo."
+            exit 1
+          fi
+          echo "Segredos presentes — seguindo pra rota OTA."
+
+      - name: "OTA 1 — Preparar chave de API do App Store Connect"
+        if: ${{ inputs.instalar_ota }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/private_keys"
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$ASC_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          cp "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" "$HOME/.appstoreconnect/private_keys/"
+          echo "Chave de API instalada (Key ID: $ASC_KEY_ID)"
+
+      - name: "OTA 2 — Gerar ExportOptions Ad Hoc"
+        if: ${{ inputs.instalar_ota }}
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          mkdir -p build
+          cat > build/ExportOptions-adhoc.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>release-testing</string>
+            <key>teamID</key>
+            <string>${TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+            <key>provisioningProfiles</key>
+            <dict/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>compileBitcode</key>
+            <false/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint build/ExportOptions-adhoc.plist
+          grep -A1 teamID build/ExportOptions-adhoc.plist
+
+      - name: "OTA 3 — Arquivar (assinatura automática, Ad Hoc)"
+        if: ${{ inputs.instalar_ota }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          xcodebuild \
+            -project BaixaVideos.xcodeproj \
+            -scheme BaixaVideos \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/BaixaVideos-adhoc.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            archive
+
+      - name: "OTA 4 — Exportar .ipa (Ad Hoc)"
+        if: ${{ inputs.instalar_ota }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild \
+            -exportArchive \
+            -archivePath build/BaixaVideos-adhoc.xcarchive \
+            -exportPath build/export-adhoc \
+            -exportOptionsPlist build/ExportOptions-adhoc.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          ls -lh build/export-adhoc/
+
+      - name: "OTA 5 — Gerar manifesto e página de instalação"
+        if: ${{ inputs.instalar_ota }}
+        run: |
+          set -e
+          VERSAO=$(grep -E '^[[:space:]]+MARKETING_VERSION:' project.yml | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$VERSAO" ]; then
+            echo "::error::OTA FALHOU: MARKETING_VERSION não encontrado no project.yml"
+            exit 1
+          fi
+          echo "VERSAO=$VERSAO" >> "$GITHUB_ENV"
+          PAGES_BASE="https://pescadocamarao.github.io/Github"
+          IPA_SRC=$(find build/export-adhoc -maxdepth 1 -name "*.ipa" | head -n 1)
+          if [ -z "$IPA_SRC" ]; then
+            echo "::error::OTA FALHOU: nenhum .ipa em build/export-adhoc"
+            exit 1
+          fi
+          echo "IPA Ad Hoc: $IPA_SRC"
+
+          gerar_pasta() {
+            DEST="$1"; BASE="$2"
+            mkdir -p "$DEST"
+            cp "$IPA_SRC" "$DEST/BaixaVideos.ipa"
+            cat > "$DEST/manifest.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key>
+                    <string>software-package</string>
+                    <key>url</key>
+                    <string>${BASE}/BaixaVideos.ipa</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key>
+                  <string>com.seidao.baixavideos</string>
+                  <key>bundle-version</key>
+                  <string>${VERSAO}</string>
+                  <key>kind</key>
+                  <string>software</string>
+                  <key>title</key>
+                  <string>BaixaVídeos</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          EOF
+            plutil -lint "$DEST/manifest.plist"
+            MANIFEST_ENC=$(printf '%s' "${BASE}/manifest.plist" | sed 's/:/%3A/g; s/\//%2F/g')
+            cat > "$DEST/index.html" <<EOF
+          <!DOCTYPE html>
+          <html lang="pt-BR">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>BaixaVídeos v${VERSAO} — Instalar</title>
+          <style>
+            body { font-family: -apple-system, sans-serif; background: #0a0d0a; color: #f5f5f5; text-align: center; padding: 48px 20px; }
+            a.botao { display: inline-block; margin-top: 24px; padding: 16px 36px; background: #b8f533; color: #0a0d0a; font-size: 20px; font-weight: 700; border-radius: 14px; text-decoration: none; }
+            p { color: #9a9a9a; }
+          </style>
+          </head>
+          <body>
+          <h1>BaixaVídeos v${VERSAO}</h1>
+          <p>Build ${{ github.run_number }} — instalação direta (Ad Hoc)</p>
+          <a class="botao" href="itms-services://?action=download-manifest&amp;url=${MANIFEST_ENC}">Instalar</a>
+          <p>Abra esta página no Safari do iPhone registrado.<br>Primeira vez: Ajustes → Geral → VPN e Gestão de Dispositivos → Confiar.</p>
+          </body>
+          </html>
+          EOF
+            echo "Pasta gerada: $DEST (base: $BASE)"
+          }
+
+          rm -rf site
+          gerar_pasta "site/v${VERSAO}" "${PAGES_BASE}/v${VERSAO}"
+          gerar_pasta "site" "${PAGES_BASE}"
+          find site -type f | sort
+
+      - name: "OTA 6 — Publicar no GitHub Pages (branch gh-pages)"
+        if: ${{ inputs.instalar_ota }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          PAGES_DIR="$RUNNER_TEMP/pages"
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "Branch gh-pages já existe — clonando."
+            git clone --depth 1 --branch gh-pages "$REPO_URL" "$PAGES_DIR"
+          else
+            echo "Branch gh-pages ainda não existe — criando do zero."
+            mkdir -p "$PAGES_DIR"
+            git -C "$PAGES_DIR" init -b gh-pages
+            git -C "$PAGES_DIR" remote add origin "$REPO_URL"
+          fi
+          cp -R site/. "$PAGES_DIR/"
+          git -C "$PAGES_DIR" config user.name "github-actions[bot]"
+          git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$PAGES_DIR" add -A
+          if git -C "$PAGES_DIR" diff --cached --quiet; then
+            echo "Nada novo pra publicar."
+          else
+            git -C "$PAGES_DIR" commit -m "ota: BaixaVideos v${VERSAO} (run ${{ github.run_number }})"
+            git -C "$PAGES_DIR" push origin gh-pages
+            echo "Publicado na branch gh-pages."
+          fi
+
+      - name: "OTA 7 — Resumo com o link de instalação"
+        if: ${{ inputs.instalar_ota }}
+        run: |
+          {
+            echo "## 📲 Instalação OTA — BaixaVídeos v${VERSAO}"
+            echo ""
+            echo "Abra esta página **no Safari do iPhone** e toque em **Instalar**:"
+            echo ""
+            echo "https://pescadocamarao.github.io/Github/"
+            echo ""
+            echo "Página desta versão: https://pescadocamarao.github.io/Github/v${VERSAO}/"
+            echo ""
+            echo "O .ipa é Ad Hoc: só instala no iPhone registrado (UDID no perfil)."
+            echo "Se a página der 404, ative o GitHub Pages (Settings → Pages → branch \`gh-pages\`, pasta raiz) e aguarde 1–2 minutos."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Link de instalação: https://pescadocamarao.github.io/Github/"
+
+      # ======================================================================
+      # FIM DA ROTA OTA
+      # ======================================================================
+
+      - name: Publicar erros no repo
+        if: failure()
+        continue-on-error: true
+        run: |
+          REPORT_TMP="$(mktemp)"
+          if [[ -f build-full-log.txt ]]; then
+            {
+              echo "BaixaVídeos — erros da build"
+              echo "Run: $GITHUB_RUN_ID"
+              echo "Gerado em (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo
+              if grep -q "error:" build-full-log.txt; then
+                echo "== Linhas com error: (máx. 100) =="
+                grep -n "error:" build-full-log.txt | head -n 100
+                echo
+                echo "== Contexto final do log (últimas 100 linhas) =="
+                tail -n 100 build-full-log.txt
+              else
+                echo "Nenhuma linha com 'error:' encontrada; últimas 200 linhas do log:"
+                echo
+                tail -n 200 build-full-log.txt
+              fi
+            } > "$REPORT_TMP"
+          else
+            {
+              echo "BaixaVídeos — erros da build"
+              echo "Run: $GITHUB_RUN_ID"
+              echo "Gerado em (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo
+              echo "build-full-log.txt não foi gerado nesta run."
+            } > "$REPORT_TMP"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$GITHUB_REF_NAME"
+          git rebase "origin/$GITHUB_REF_NAME"
+          cp "$REPORT_TMP" build-errors.txt
+          git add build-errors.txt
+          git commit -m "ci: build errors"
+          git push origin "HEAD:$GITHUB_REF_NAME"
