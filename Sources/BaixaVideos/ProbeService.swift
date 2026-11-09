@@ -73,21 +73,29 @@ enum ProbeService {
         let fileExtensions: Set<String> = [
             "mp4", "mov", "mkv", "webm", "avi", "ts", "m4v", "mp3", "m4a", "zip"
         ]
-        if !fileExtensions.contains(ext),
-           let media = await PageDigger.dig(pageURL: url) {
-            // A própria URL já era a playlist (disfarçada, sem extensão).
-            if media == url { return try await probeHLS(url: url) }
-            let result = try await probe(url: media)
-            return ProbeResult(
-                sourceURL: url,
-                finalURL: result.finalURL,
-                contentType: result.contentType,
-                contentLength: result.contentLength,
-                supportsRange: result.supportsRange,
-                kind: result.kind,
-                variants: result.variants,
-                segmentCount: result.segmentCount
-            )
+        if !fileExtensions.contains(ext) {
+            let dug = await PageDigger.dig(pageURL: url)
+            if let media = dug.media {
+                // A própria URL já era a playlist (disfarçada, sem extensão).
+                if media == url { return try await probeHLS(url: url) }
+                let result = try await probe(url: media)
+                return ProbeResult(
+                    sourceURL: url,
+                    finalURL: result.finalURL,
+                    contentType: result.contentType,
+                    contentLength: result.contentLength,
+                    supportsRange: result.supportsRange,
+                    kind: result.kind,
+                    variants: result.variants,
+                    segmentCount: result.segmentCount
+                )
+            }
+            // Página sem vídeo achado: erro com o diagnóstico da
+            // escavação, em vez de tratar a página como arquivo.
+            throw NSError(
+                domain: "BaixaVideos", code: 12,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Não achei vídeo nesta página. Diagnóstico: \(dug.report)"])
         }
         return try await probeFile(url: url)
     }

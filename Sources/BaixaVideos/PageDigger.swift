@@ -1,48 +1,74 @@
 import Foundation
 import WebKit
+import UIKit
 
 /// Escavador de mídia: recebe o link de uma PÁGINA de vídeo e acha o
 /// link do stream (.m3u8/.mp4) escondido nela — pra colar o link da
 /// página direto, sem caçar o .m3u8 na mão.
 ///
-/// Estratégias, na ordem (as duas primeiras são as regex do próprio
-/// seidao, as que ele usa nas rules do Yealico):
-/// 1. JSON/script com barras escapadas (`https:\/\/...index.m3u8`)
-/// 2. Iframe com `url=` no src → a página do player embutido (escava ela)
-/// 3. og:video / og:video:secure_url
-/// 4. Qualquer .m3u8 / .mp4 literal no HTML
+/// Estratégias, na ordem:
+/// 1. Busca direta do HTML + regex (as do próprio seidao: barras
+///    escapadas do player_aaaa e iframe com `url=`)
+/// 2. Navegador embutido (WKWebView): vê a página como o Safari,
+///    colhe a config do player, os recursos que o player carregou e,
+///    se o player morar num iframe, entra no iframe e colhe de novo
+/// Cada etapa anota o que viu num relatório — se tudo falhar, o
+/// relatório vai na mensagem de erro, pra não voar no escuro.
 enum PageDigger {
 
-    /// Devolve a URL de mídia achada, ou nil se a página não revelar nada.
-    static func dig(pageURL: URL) async -> URL? {
-        guard let html = try? await DownloadTransport.fetchText(url: pageURL) else {
-            return nil
-        }
-        // A "página" pode ser a playlist disfarçada (URL sem extensão).
-        if html.contains("#EXTM3U") { return pageURL }
-        let found = extract(html: html, baseURL: pageURL)
-        if let media = found.media { return media }
-        if let embed = found.embed,
-           let embedHTML = try? await DownloadTransport.fetchText(url: embed) {
-            if embedHTML.contains("#EXTM3U") { return embed }
-            if let media = extract(html: embedHTML, baseURL: embed).media {
-                return media
+    struct Result {
+        let media: URL?
+        let report: String
+    }
+
+    static func dig(pageURL: URL) async -> Result {
+        var notes: [String] = []
+
+        // Etapa 1 — busca direta
+        var staticEmbed: URL? = nil
+        do {
+            let html = try await DownloadTransport.fetchText(url: pageURL)
+            notes.append("busca direta: HTML de \(html.count / 1024) KB")
+            if html.contains("#EXTM3U") {
+                return Result(media: pageURL, report: notes.joined(separator: " · "))
             }
+            if html.contains("player_aaaa") || html.contains("player_data") {
+                notes.append("config do player presente no HTML")
+            } else {
+                notes.append("sem config de player no HTML")
+            }
+            let found = extract(html: html, baseURL: pageURL)
+            if let media = found.media {
+                notes.append("regex achou a mídia no HTML")
+                return Result(media: media, report: notes.joined(separator: " · "))
+            }
+            staticEmbed = found.embed
+            if let embedHTML = try? await DownloadTransport.fetchText(url: found.embed ?? pageURL),
+               found.embed != nil {
+                let inner = extract(html: embedHTML, baseURL: found.embed ?? pageURL)
+                if let media = inner.media {
+                    notes.append("regex achou a mídia no iframe (busca direta)")
+                    return Result(media: media, report: notes.joined(separator: " · "))
+                }
+            }
+        } catch {
+            notes.append("busca direta falhou (\(error.localizedDescription))")
         }
-        // Plano B: a busca direta pode receber uma página diferente da
-        // que o Safari recebe (anti-robô). Aí quem escava é um navegador
-        // de verdade dentro do app, que vê a página como o Safari vê —
-        // inclusive o que o player JS realmente carregou.
-        let webCandidates = await WebViewDigger.dig(url: pageURL)
-        for candidate in webCandidates where !candidate.contains("<") {
+
+        // Etapa 2 — navegador embutido
+        let harvest = await WebViewDigger.dig(url: pageURL, staticEmbed: staticEmbed)
+        notes.append(harvest.note)
+        for candidate in harvest.urls where !candidate.contains("<") {
             if let url = resolve(candidate, baseURL: pageURL), isMedia(url) {
-                return url
+                return Result(media: url, report: notes.joined(separator: " · "))
             }
         }
-        if let renderedHTML = webCandidates.last(where: { $0.contains("<") }) {
-            return extract(html: renderedHTML, baseURL: pageURL).media
+        if let renderedHTML = harvest.urls.last(where: { $0.contains("<") }),
+           let media = extract(html: renderedHTML, baseURL: pageURL).media {
+            notes.append("regex achou a mídia no HTML renderizado")
+            return Result(media: media, report: notes.joined(separator: " · "))
         }
-        return nil
+        return Result(media: nil, report: notes.joined(separator: " · "))
     }
 
     static func extract(html: String, baseURL: URL) -> (media: URL?, embed: URL?) {
@@ -95,12 +121,12 @@ enum PageDigger {
         return (nil, embed)
     }
 
-    private static func isMedia(_ url: URL) -> Bool {
+    static func isMedia(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         return ext == "m3u8" || ext == "mp4"
     }
 
-    private static func resolve(_ raw: String, baseURL: URL) -> URL? {
+    static func resolve(_ raw: String, baseURL: URL) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         if let url = URL(string: trimmed, relativeTo: baseURL)?.absoluteURL { return url }
         return nil
@@ -117,39 +143,64 @@ enum PageDigger {
     }
 }
 
-
-/// Plano B da escavação: carrega a página num WKWebView (o mesmo motor
-/// do Safari, com o mesmo caminho de rede do aparelho) e colhe:
-/// a config do player (player_aaaa/player_data do MacCMS e afins), as
-/// tags <video>/<source>, TODOS os recursos que a página realmente
-/// carregou (performance entries — a playlist que o player tocou
-/// aparece aí) e o HTML já renderizado.
+/// Etapa 2 da escavação: carrega a página num WKWebView ligado à
+/// janela do app (WebView solto o iOS pode congelar) e colhe, de
+/// todos os frames acessíveis: config do player (player_aaaa /
+/// player_data), tags <video>/<source>, os recursos realmente
+/// carregados (performance entries) e o HTML renderizado. Se o
+/// player morar num iframe, faz uma segunda rodada dentro dele.
 @MainActor
 final class WebViewDigger: NSObject, WKNavigationDelegate {
-    private var webView: WKWebView?
-    private var continuation: CheckedContinuation<[String], Never>?
-    private var timeoutTask: Task<Void, Never>?
-    private var extractionStarted = false
-
-    static func dig(url: URL) async -> [String] {
-        let digger = WebViewDigger()
-        return await digger.run(url: url)
+    struct Harvest {
+        let urls: [String]
+        let note: String
     }
 
-    private func run(url: URL) async -> [String] {
+    private var webView: WKWebView?
+    private var continuation: CheckedContinuation<Harvest, Never>?
+    private var timeoutTask: Task<Void, Never>?
+    private var extractionStarted = false
+    private var round = 0
+    private var collected: [String] = []
+    private var pendingEmbed: URL?
+    private var baseURL: URL?
+
+    static func dig(url: URL, staticEmbed: URL?) async -> Harvest {
+        let digger = WebViewDigger()
+        return await digger.run(url: url, staticEmbed: staticEmbed)
+    }
+
+    private func run(url: URL, staticEmbed: URL?) async -> Harvest {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
+            self.baseURL = url
+            self.pendingEmbed = staticEmbed
             let webView = WKWebView(
-                frame: CGRect(x: 0, y: 0, width: 390, height: 844),
+                frame: CGRect(x: -1200, y: 0, width: 390, height: 844),
                 configuration: WKWebViewConfiguration())
             webView.navigationDelegate = self
+            webView.customUserAgent = DownloadTransport.userAgent
+            webView.isUserInteractionEnabled = false
+            webView.alpha = 0.02
             self.webView = webView
+            // Ligado à janela (fora da tela): WebView solto pode ser
+            // congelado pelo iOS e nunca rodar o JS da página.
+            if let window = Self.keyWindow() {
+                window.addSubview(webView)
+            }
             webView.load(DownloadTransport.makeRequest(url: url, timeout: 30))
             timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-                self?.finish(with: [])
+                try? await Task.sleep(nanoseconds: 25_000_000_000)
+                self?.finish(note: "tempo esgotado")
             }
         }
+    }
+
+    private static func keyWindow() -> UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -161,11 +212,11 @@ final class WebViewDigger: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        finish(with: [])
+        finish(note: "navegação falhou (\(error.localizedDescription))")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        finish(with: [])
+        finish(note: "navegação falhou (\(error.localizedDescription))")
     }
 
     private func extract() {
@@ -173,33 +224,70 @@ final class WebViewDigger: NSObject, WKNavigationDelegate {
         extractionStarted = true
         let script = """
         (() => {
-          const found = [];
+          const urls = [];
+          const frames = [];
+          const scan = (win) => {
+            try {
+              if (win.player_aaaa && win.player_aaaa.url) urls.push(win.player_aaaa.url);
+              if (win.player_data && win.player_data.url) urls.push(win.player_data.url);
+            } catch (e) {}
+            try {
+              win.document.querySelectorAll('video, source').forEach(el => { if (el.src) urls.push(el.src); });
+            } catch (e) {}
+            try {
+              win.performance.getEntriesByType('resource').forEach(e => { if (e.name) urls.push(e.name); });
+            } catch (e) {}
+            try {
+              for (let i = 0; i < win.frames.length; i++) {
+                try { frames.push(win.frames[i].location.href); } catch (e) {}
+                scan(win.frames[i]);
+              }
+            } catch (e) {}
+          };
+          scan(window);
           try {
-            if (typeof player_aaaa !== 'undefined' && player_aaaa && player_aaaa.url) found.push(player_aaaa.url);
-            if (typeof player_data !== 'undefined' && player_data && player_data.url) found.push(player_data.url);
+            document.querySelectorAll('iframe').forEach(el => { if (el.src) frames.push(el.src); });
           } catch (e) {}
-          try {
-            document.querySelectorAll('video, source').forEach(el => { if (el.src) found.push(el.src); });
-          } catch (e) {}
-          try {
-            performance.getEntriesByType('resource').forEach(e => { if (e.name) found.push(e.name); });
-          } catch (e) {}
-          try { found.push(document.documentElement.outerHTML); } catch (e) {}
-          return found;
+          try { urls.push(document.documentElement.outerHTML); } catch (e) {}
+          return { urls: urls, frames: frames };
         })()
         """
         webView.evaluateJavaScript(script) { [weak self] result, _ in
-            let candidates = (result as? [String]) ?? []
-            self?.finish(with: candidates)
+            guard let self else { return }
+            var urls: [String] = []
+            var frames: [String] = []
+            if let dict = result as? [String: Any] {
+                urls = (dict["urls"] as? [String]) ?? []
+                frames = (dict["frames"] as? [String]) ?? []
+            }
+            self.collected.append(contentsOf: urls)
+            let hasMedia = self.collected.contains {
+                !$0.contains("<") && (PageDigger.isMedia(URL(string: $0) ?? URL(fileURLWithPath: "/")))
+            }
+            if !hasMedia, self.round == 0 {
+                // Segunda rodada: entra no iframe do player.
+                let frameURL = frames
+                    .compactMap { URL(string: $0) }
+                    .first { $0.scheme == "https" || $0.scheme == "http" }
+                let next = frameURL ?? self.pendingEmbed
+                if let next, next != self.baseURL {
+                    self.round = 1
+                    self.extractionStarted = false
+                    self.webView?.load(DownloadTransport.makeRequest(url: next, timeout: 30))
+                    return
+                }
+            }
+            self.finish(note: "webview: \(self.collected.count) candidatos, \(frames.count) frames, rodada \(self.round + 1)")
         }
     }
 
-    private func finish(with candidates: [String]) {
+    private func finish(note: String) {
         guard let continuation else { return }
         self.continuation = nil
         timeoutTask?.cancel()
         webView?.stopLoading()
+        webView?.removeFromSuperview()
         webView = nil
-        continuation.resume(returning: candidates)
+        continuation.resume(returning: Harvest(urls: collected, note: note))
     }
 }
