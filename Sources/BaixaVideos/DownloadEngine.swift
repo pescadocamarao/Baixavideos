@@ -858,6 +858,7 @@ enum HLSCrypto {
         guard key.count == 16, iv.count == 16, !data.isEmpty else { return nil }
         var output = Data(count: data.count + kCCBlockSizeAES128)
         var outputLength = 0
+        let outputCapacity = output.count
         let status: CCCryptorStatus = output.withUnsafeMutableBytes { outputPointer in
             data.withUnsafeBytes { dataPointer in
                 key.withUnsafeBytes { keyPointer in
@@ -869,7 +870,7 @@ enum HLSCrypto {
                             keyPointer.baseAddress, key.count,
                             ivPointer.baseAddress,
                             dataPointer.baseAddress, data.count,
-                            outputPointer.baseAddress, output.count,
+                            outputPointer.baseAddress, outputCapacity,
                             &outputLength)
                     }
                 }
