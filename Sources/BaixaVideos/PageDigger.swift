@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 /// Escavador de mídia: recebe o link de uma PÁGINA de vídeo e acha o
 /// link do stream (.m3u8/.mp4) escondido nela — pra colar o link da
@@ -24,7 +25,22 @@ enum PageDigger {
         if let embed = found.embed,
            let embedHTML = try? await DownloadTransport.fetchText(url: embed) {
             if embedHTML.contains("#EXTM3U") { return embed }
-            return extract(html: embedHTML, baseURL: embed).media
+            if let media = extract(html: embedHTML, baseURL: embed).media {
+                return media
+            }
+        }
+        // Plano B: a busca direta pode receber uma página diferente da
+        // que o Safari recebe (anti-robô). Aí quem escava é um navegador
+        // de verdade dentro do app, que vê a página como o Safari vê —
+        // inclusive o que o player JS realmente carregou.
+        let webCandidates = await WebViewDigger.dig(url: pageURL)
+        for candidate in webCandidates where !candidate.contains("<") {
+            if let url = resolve(candidate, baseURL: pageURL), isMedia(url) {
+                return url
+            }
+        }
+        if let renderedHTML = webCandidates.last(where: { $0.contains("<") }) {
+            return extract(html: renderedHTML, baseURL: pageURL).media
         }
         return nil
     }
@@ -98,5 +114,92 @@ enum PageDigger {
               match.numberOfRanges > 1,
               let capture = Range(match.range(at: 1), in: text) else { return nil }
         return String(text[capture])
+    }
+}
+
+
+/// Plano B da escavação: carrega a página num WKWebView (o mesmo motor
+/// do Safari, com o mesmo caminho de rede do aparelho) e colhe:
+/// a config do player (player_aaaa/player_data do MacCMS e afins), as
+/// tags <video>/<source>, TODOS os recursos que a página realmente
+/// carregou (performance entries — a playlist que o player tocou
+/// aparece aí) e o HTML já renderizado.
+@MainActor
+final class WebViewDigger: NSObject, WKNavigationDelegate {
+    private var webView: WKWebView?
+    private var continuation: CheckedContinuation<[String], Never>?
+    private var timeoutTask: Task<Void, Never>?
+    private var extractionStarted = false
+
+    static func dig(url: URL) async -> [String] {
+        let digger = WebViewDigger()
+        return await digger.run(url: url)
+    }
+
+    private func run(url: URL) async -> [String] {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            let webView = WKWebView(
+                frame: CGRect(x: 0, y: 0, width: 390, height: 844),
+                configuration: WKWebViewConfiguration())
+            webView.navigationDelegate = self
+            self.webView = webView
+            webView.load(DownloadTransport.makeRequest(url: url, timeout: 30))
+            timeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                self?.finish(with: [])
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Dá tempo do JS do player montar e pedir a playlist.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            self?.extract()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        finish(with: [])
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        finish(with: [])
+    }
+
+    private func extract() {
+        guard !extractionStarted, let webView else { return }
+        extractionStarted = true
+        let script = """
+        (() => {
+          const found = [];
+          try {
+            if (typeof player_aaaa !== 'undefined' && player_aaaa && player_aaaa.url) found.push(player_aaaa.url);
+            if (typeof player_data !== 'undefined' && player_data && player_data.url) found.push(player_data.url);
+          } catch (e) {}
+          try {
+            document.querySelectorAll('video, source').forEach(el => { if (el.src) found.push(el.src); });
+          } catch (e) {}
+          try {
+            performance.getEntriesByType('resource').forEach(e => { if (e.name) found.push(e.name); });
+          } catch (e) {}
+          try { found.push(document.documentElement.outerHTML); } catch (e) {}
+          return found;
+        })()
+        """
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            let candidates = (result as? [String]) ?? []
+            self?.finish(with: candidates)
+        }
+    }
+
+    private func finish(with candidates: [String]) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        webView?.stopLoading()
+        webView = nil
+        continuation.resume(returning: candidates)
     }
 }
