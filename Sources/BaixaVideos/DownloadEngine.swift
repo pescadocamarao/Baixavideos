@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CommonCrypto
 
 // MARK: - Job
 
@@ -370,16 +371,20 @@ final class DownloadManager: ObservableObject {
     private func runHLS(_ job: DownloadJob) async throws {
         let request = job.request
         let playlist = try await DownloadTransport.fetchText(url: request.mediaURL)
-        if playlist.contains("#EXT-X-KEY") && !playlist.contains("METHOD=NONE") {
-            throw NSError(
-                domain: "BaixaVideos", code: 10,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "Este HLS é criptografado (EXT-X-KEY). Esta versão não descriptografa streams protegidos."]
-            )
+        let hlsSegments: [HLSSegment]
+        do {
+            hlsSegments = try Self.parseHLSSegments(playlist: playlist, baseURL: request.mediaURL)
+        } catch let error as NSError where error.code == 11 {
+            throw error // método de criptografia não suportado (mensagem pronta)
         }
-        let segmentURLs = Self.parseSegmentURLs(playlist: playlist, baseURL: request.mediaURL)
+        let segmentURLs = hlsSegments.map { $0.url }
         guard !segmentURLs.isEmpty else {
             throw URLError(.cannotParseResponse)
+        }
+        // Chaves de criptografia (AES-128): busca cada uma uma única vez.
+        var keyCache: [URL: Data] = [:]
+        for keyURI in Set(hlsSegments.compactMap { $0.keyURI }) {
+            keyCache[keyURI] = try await DownloadTransport.fetchData(url: keyURI)
         }
 
         try createTempDirectory(job)
@@ -410,9 +415,8 @@ final class DownloadManager: ObservableObject {
                     started += 1
                     let pieceID = piece.id
                     await MainActor.run { job.setPieceState(pieceID, .active) }
-                    let segmentURL = segmentURLs[pieceID]
                     group.addTask {
-                        (pieceID, try await DownloadTransport.fetchData(url: segmentURL))
+                        (pieceID, try await Self.fetchHLSSegment(hlsSegments[pieceID], keyCache: keyCache))
                     }
                 }
                 for try await (pieceID, data) in group {
@@ -427,9 +431,8 @@ final class DownloadManager: ObservableObject {
                     if let next = iterator.next() {
                         let nextID = next.id
                         await MainActor.run { job.setPieceState(nextID, .active) }
-                        let segmentURL = segmentURLs[nextID]
                         group.addTask {
-                            (nextID, try await DownloadTransport.fetchData(url: segmentURL))
+                            (nextID, try await Self.fetchHLSSegment(hlsSegments[nextID], keyCache: keyCache))
                         }
                     }
                 }
@@ -456,6 +459,70 @@ final class DownloadManager: ObservableObject {
             }
         }
         return urls
+    }
+
+    /// Segmentos com o contexto de criptografia de cada um: a tag
+    /// EXT-X-KEY vale da posição dela até a próxima, e o número de
+    /// sequência (EXT-X-MEDIA-SEQUENCE + índice) é o IV padrão.
+    static func parseHLSSegments(playlist: String, baseURL: URL) throws -> [HLSSegment] {
+        var segments: [HLSSegment] = []
+        var mediaSequence: Int64 = 0
+        var currentKeyURI: URL? = nil
+        var currentKeyIV: Data? = nil
+        for rawLine in playlist.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#EXT-X-MEDIA-SEQUENCE:") {
+                mediaSequence = Int64(line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count)) ?? 0
+            } else if line.hasPrefix("#EXT-X-KEY:") {
+                let attrs = ProbeService.parseAttributes(
+                    String(line.dropFirst("#EXT-X-KEY:".count)))
+                let method = (attrs["METHOD"] ?? "NONE").uppercased()
+                if method == "NONE" {
+                    currentKeyURI = nil
+                    currentKeyIV = nil
+                } else if method == "AES-128" {
+                    guard let uri = attrs["URI"],
+                          let resolved = URL(string: uri, relativeTo: baseURL)?.absoluteURL
+                    else { continue }
+                    currentKeyURI = resolved
+                    if let ivText = attrs["IV"] {
+                        currentKeyIV = HLSCrypto.parseIV(ivText)
+                    } else {
+                        currentKeyIV = nil
+                    }
+                } else {
+                    // SAMPLE-AES e DRM (FairPlay/Widevine) não são AES-128
+                    // puro — fora do alcance desta versão.
+                    throw NSError(
+                        domain: "BaixaVideos", code: 11,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Este vídeo usa criptografia \(method), que o app ainda não abre (só AES-128)."])
+                }
+            } else if !line.isEmpty && !line.hasPrefix("#") {
+                if let url = URL(string: line, relativeTo: baseURL)?.absoluteURL {
+                    segments.append(HLSSegment(
+                        url: url,
+                        sequence: mediaSequence + Int64(segments.count),
+                        keyURI: currentKeyURI,
+                        keyIV: currentKeyIV))
+                }
+            }
+        }
+        return segments
+    }
+
+    /// Baixa um segmento e, se ele for criptografado, descriptografa.
+    static func fetchHLSSegment(_ segment: HLSSegment, keyCache: [URL: Data]) async throws -> Data {
+        var data = try await DownloadTransport.fetchData(url: segment.url)
+        if let keyURI = segment.keyURI {
+            guard let key = keyCache[keyURI] else { throw URLError(.cannotDecodeContentData) }
+            let iv = segment.keyIV ?? HLSCrypto.sequenceIV(segment.sequence)
+            guard let plain = HLSCrypto.decryptAES128(data: data, key: key, iv: iv) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            data = plain
+        }
+        return data
     }
 
     // MARK: Montagem e biblioteca
@@ -744,5 +811,72 @@ final class StreamDownloader: NSObject, URLSessionDataDelegate, @unchecked Senda
         } else {
             finish(throwing: URLError(.unknown))
         }
+    }
+}
+
+// MARK: - HLS com criptografia (AES-128)
+
+/// Um segmento da playlist com a chave que vale pra ele (se houver).
+struct HLSSegment {
+    let url: URL
+    let sequence: Int64
+    let keyURI: URL?
+    let keyIV: Data?
+}
+
+enum HLSCrypto {
+    /// IV padrão do HLS: o número de sequência do segmento como inteiro
+    /// de 128 bits (big-endian).
+    static func sequenceIV(_ sequence: Int64) -> Data {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        var value = UInt64(bitPattern: sequence)
+        for index in stride(from: 15, through: 8, by: -1) {
+            bytes[index] = UInt8(value & 0xFF)
+            value >>= 8
+        }
+        return Data(bytes)
+    }
+
+    /// IV declarado na tag ("0x" + 32 dígitos hex).
+    static func parseIV(_ text: String) -> Data? {
+        var hex = text.lowercased()
+        if hex.hasPrefix("0x") { hex = String(hex.dropFirst(2)) }
+        guard hex.count == 32 else { return nil }
+        var bytes: [UInt8] = []
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return Data(bytes)
+    }
+
+    /// AES-128-CBC com PKCS7 — o esquema do EXT-X-KEY:METHOD=AES-128.
+    static func decryptAES128(data: Data, key: Data, iv: Data) -> Data? {
+        guard key.count == 16, iv.count == 16, !data.isEmpty else { return nil }
+        var output = Data(count: data.count + kCCBlockSizeAES128)
+        var outputLength = 0
+        let status: CCCryptorStatus = output.withUnsafeMutableBytes { outputPointer in
+            data.withUnsafeBytes { dataPointer in
+                key.withUnsafeBytes { keyPointer in
+                    iv.withUnsafeBytes { ivPointer in
+                        CCCrypt(
+                            CCOperation(kCCDecrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyPointer.baseAddress, key.count,
+                            ivPointer.baseAddress,
+                            dataPointer.baseAddress, data.count,
+                            outputPointer.baseAddress, output.count,
+                            &outputLength)
+                    }
+                }
+            }
+        }
+        guard status == kCCSuccess else { return nil }
+        output.count = outputLength
+        return output
     }
 }

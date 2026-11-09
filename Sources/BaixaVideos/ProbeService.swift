@@ -67,6 +67,28 @@ enum ProbeService {
         if ext == "m3u8" {
             return try await probeHLS(url: url)
         }
+        // Sem extensão de arquivo conhecida, pode ser a PÁGINA do vídeo:
+        // escava a mídia de dentro dela e sonda a mídia, mantendo a
+        // página como origem do resultado.
+        let fileExtensions: Set<String> = [
+            "mp4", "mov", "mkv", "webm", "avi", "ts", "m4v", "mp3", "m4a", "zip"
+        ]
+        if !fileExtensions.contains(ext),
+           let media = await PageDigger.dig(pageURL: url) {
+            // A própria URL já era a playlist (disfarçada, sem extensão).
+            if media == url { return try await probeHLS(url: url) }
+            let result = try await probe(url: media)
+            return ProbeResult(
+                sourceURL: url,
+                finalURL: result.finalURL,
+                contentType: result.contentType,
+                contentLength: result.contentLength,
+                supportsRange: result.supportsRange,
+                kind: result.kind,
+                variants: result.variants,
+                segmentCount: result.segmentCount
+            )
+        }
         return try await probeFile(url: url)
     }
 
